@@ -1,0 +1,6 @@
+name = "pgaskets-inv-api"
+main = "worker.js"
+compatibility_date = "2024-08-18"
+
+[env.production]
+name = "pgaskets-inv-api"

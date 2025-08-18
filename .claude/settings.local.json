@@ -14,7 +14,12 @@
       "Bash(git branch:*)",
       "Bash(git push:*)",
       "Bash(git pull:*)",
-      "Bash(git commit:*)"
+      "Bash(git commit:*)",
+      "Bash(npx wrangler secret:*)",
+      "Bash(npx wrangler:*)",
+      "Bash(npm install:*)",
+      "Bash(vercel login:*)",
+      "Bash(vercel:*)"
     ],
     "deny": [],
     "ask": []
