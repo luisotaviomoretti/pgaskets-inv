@@ -9,6 +9,7 @@ import { Badge } from '@/components/ui/badge';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { toast } from 'sonner';
+import { useAuth } from '@/components/auth/AuthContext';
 // Code-split heavy tabs; they will mount once and remain mounted (NAV-12)
 const Receiving = lazy(() => import('./Receiving'));
 const WorkOrder = lazy(() => import('./WorkOrder'));
@@ -715,6 +716,7 @@ function VendorsManager({
 }
 
 export default function InventoryWireframe() {
+  const { user, signOut } = useAuth();
   const [tab, setTab] = useState('dashboard');
   const [period, setPeriod] = useState<PeriodOption>('last7');
   const [customStart, setCustomStart] = useState<string>('');
@@ -1116,7 +1118,24 @@ export default function InventoryWireframe() {
               <h1 className="text-base font-semibold">Inventory — Dashboard (Preview)</h1>
             </div>
           </div>
-          <div className="hidden md:flex items-center gap-2"><Badge variant="secondary" className="rounded-full">MVP</Badge></div>
+          <div className="flex items-center gap-3">
+            <div className="hidden md:flex items-center gap-2">
+              <Badge variant="secondary" className="rounded-full">MVP</Badge>
+            </div>
+            <div className="flex items-center gap-3">
+              <div className="text-sm text-slate-600">
+                {user?.email}
+              </div>
+              <Button 
+                variant="outline" 
+                size="sm"
+                onClick={signOut}
+                className="rounded-xl"
+              >
+                Sign Out
+              </Button>
+            </div>
+          </div>
         </div>
       </header>
 
