@@ -1,0 +1,21 @@
+# Environment files
+.env
+.env.*
+.env.local
+.env.development.local
+.env.production.local
+
+# Supabase generated types
+src/types/database.types.ts
+
+# Build output
+node_modules
+.dist
+build
+coverage
+
+# OS/IDE
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
