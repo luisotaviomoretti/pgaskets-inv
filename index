@@ -1,0 +1,27 @@
+import { createClient } from '@supabase/supabase-js'
+
+export default {
+  async fetch(request, env) {
+    // cria o cliente Supabase com as variáveis que você configurou no Secrets Store
+    const supabase = createClient(
+      await env.SUPABASE_URL.get(),
+      await env.SUPABASE_KEY.get()
+    )
+
+    // exemplo: buscar dados da tabela "produtos"
+    const { data, error } = await supabase
+      .from('produtos')
+      .select('*')
+
+    if (error) {
+      return new Response(JSON.stringify({ error: error.message }), {
+        status: 500,
+        headers: { "Content-Type": "application/json" }
+      })
+    }
+
+    return new Response(JSON.stringify(data), {
+      headers: { "Content-Type": "application/json" }
+    })
+  }
+}
