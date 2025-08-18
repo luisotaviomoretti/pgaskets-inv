@@ -35,6 +35,7 @@ DECLARE
   v_issue_qty_sum numeric := 0; -- total ISSUE quantity (sum of raw materials)
   v_waste_qty_sum numeric := 0; -- total WASTE quantity
   v_issue_unit_cost numeric := null; -- derived from ISSUE only
+  r record; -- for pre-validation FOR r IN ... LOOP
 BEGIN
   IF p_output_quantity <= 0 THEN
     RAISE EXCEPTION 'Output quantity must be positive: %', p_output_quantity USING ERRCODE = '23514';
@@ -50,6 +51,23 @@ BEGIN
     p_client_name, p_invoice_no, p_notes, 'COMPLETED', NOW()
   );
 
+  -- Pre-validate stock per SKU (ISSUE only) before any inserts
+  FOR r IN
+    SELECT sku_id, SUM(quantity) AS qty_needed
+    FROM jsonb_to_recordset(p_materials) AS x(sku_id text, quantity numeric, type text)
+    WHERE COALESCE(NULLIF(TRIM(UPPER(type)), ''), 'ISSUE') = 'ISSUE'
+    GROUP BY sku_id
+  LOOP
+    IF public.get_available_from_layers(r.sku_id) < r.qty_needed THEN
+      RAISE EXCEPTION 'Insufficient stock (layers) for SKU %. Available: %, Needed: %',
+        r.sku_id,
+        public.get_available_from_layers(r.sku_id),
+        r.qty_needed
+        USING ERRCODE = '23514';
+    END IF;
+  END LOOP;
+
+  -- Process each material consumption
   FOR v_material IN
     SELECT * FROM jsonb_to_recordset(p_materials) AS x(sku_id text, quantity numeric, type text)
   LOOP

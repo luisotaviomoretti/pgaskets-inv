@@ -81,8 +81,8 @@ BEGIN
   SELECT public.get_available_from_layers(p_sku_id) INTO v_available_layers;
 
   IF v_available_layers < p_quantity_needed THEN
-    RAISE EXCEPTION 'Insufficient stock (layers). Available: %, Needed: %',
-      v_available_layers, p_quantity_needed USING ERRCODE = '23514';
+    RAISE EXCEPTION 'Insufficient stock (layers) for SKU %. Available: %, Needed: %',
+      p_sku_id, v_available_layers, p_quantity_needed USING ERRCODE = '23514';
   END IF;
 
   -- Process layers in FIFO order

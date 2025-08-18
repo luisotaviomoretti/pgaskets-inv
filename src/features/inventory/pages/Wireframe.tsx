@@ -734,27 +734,34 @@ export default function InventoryWireframe() {
   const loadMovements = useCallback(async () => {
     try {
       setIsLoadingMovements(true);
-      const { movements } = await getBackendMovements({ limit: 200 });
-      // Map MovementWithDetails -> UI MovementLogEntry
-      const mapped: MovementLogEntry[] = (movements || []).map((m: any) => ({
-        movementId: toMovementId(String(m.id)),
-        datetime: (m.date instanceof Date ? m.date : new Date(m.date)),
-        type: m.type as MovementTypeEnum,
-        skuOrName: m.skuDescription,
-        qty: m.quantity,
-        value: m.totalCost,
-        ref: m.reference || '',
-      }));
-      setMovementLog(mapped);
-      toast.success(`Refreshed ${mapped.length} movements`);
-    } catch (err: any) {
-      toast.error('Failed to load movements');
-      // eslint-disable-next-line no-console
-      console.error('loadMovements error', err);
-    } finally {
-      setIsLoadingMovements(false);
-    }
-  }, []);
+      // Load only movements within the selected period for accurate KPIs
+      const [rangeStart, rangeEnd] = getRange(period, customStart, customEnd);
+      const { movements } = await getBackendMovements({
+        dateFrom: new Date(rangeStart),
+        dateTo: new Date(rangeEnd),
+        // High limit to avoid truncation within the period; backend can page if needed
+        limit: 5000,
+      });
+       // Map MovementWithDetails -> UI MovementLogEntry
+       const mapped: MovementLogEntry[] = (movements || []).map((m: any) => ({
+         movementId: toMovementId(String(m.id)),
+         datetime: (m.date instanceof Date ? m.date : new Date(m.date)),
+         type: m.type as MovementTypeEnum,
+         skuOrName: m.skuDescription,
+         qty: m.quantity,
+         value: m.totalCost,
+         ref: m.reference || '',
+       }));
+       setMovementLog(mapped);
+       toast.success(`Refreshed ${mapped.length} movements`);
+     } catch (err: any) {
+       toast.error('Failed to load movements');
+       // eslint-disable-next-line no-console
+       console.error('loadMovements error', err);
+     } finally {
+       setIsLoadingMovements(false);
+     }
+  }, [period, customStart, customEnd]);
 
   // Load Inventory Summary (inventory_summary view) and SKU master data
   const loadInventorySummary = useCallback(async () => {
@@ -849,6 +856,11 @@ export default function InventoryWireframe() {
     }
   }, [tab, loadMovements, loadInventorySummary]);
 
+  // Refresh movements when the selected period changes (affects KPIs)
+  useEffect(() => {
+    loadMovements();
+  }, [period, customStart, customEnd, loadMovements]);
+
   const { bins } = useMemo(() => {
     const [s, e] = getRange(period, customStart, customEnd);
     return { bins: buildBins(s, e, 7) };
@@ -887,8 +899,8 @@ export default function InventoryWireframe() {
         'On Hand': qty,
         'Minimum': min,
         'Status': qty >= min ? 'OK' : 'Below minimum',
-        'Avg. Cost (FIFO)': avgCost ? `$${avgCost.toFixed(2)}` : '—',
-        'Asset Value': avgCost ? `$${assetValue.toFixed(2)}` : '—'
+        'Avg. Cost (FIFO)': avgCost ? avgCost.toFixed(2) : 0,
+        'Asset Value': avgCost ? assetValue.toFixed(2) : 0
       };
     });
 
@@ -948,7 +960,7 @@ export default function InventoryWireframe() {
         'Type': movement.type,
         'SKU/Product': movement.skuOrName || '-',
         'Quantity': movement.qty || 0,
-        'Value': movement.value ? `$${movement.value.toFixed(2)}` : '$0.00',
+        'Value': movement.value ? movement.value.toFixed(2) : 0,
         'Reference': movement.ref || '-',
       };
     });
@@ -1013,7 +1025,7 @@ export default function InventoryWireframe() {
     // 1) Total Inventory (qty & value) — current snapshot
     const inv = skus.reduce((acc, s) => {
       const qty = Math.max(0, s.onHand ?? 0);
-      const avg = fifoAvgCost(layersBySku[s.id]) ?? 0;
+      const avg = (avgCostFor(s.id) ?? 0);
       acc.qty += qty;
       acc.value += qty * avg;
       return acc;
@@ -1053,14 +1065,21 @@ export default function InventoryWireframe() {
       return avgBin > 0 ? (cogsPerBin[i] / avgBin) : 0;
     });
 
-    // Days of Inventory = Current Inventory ÷ Daily COGS (period)
+    // Days of Inventory = Current Inventory ÷ Daily Consumption (ISSUE + WASTE)
     const daysInPeriod = Math.max(1, (rangeEnd - rangeStart) / ONE_DAY);
-    const dailyCOGS = cogsTotal / daysInPeriod;
+    const consPerBin = bins.map(([s, e]) => movementLog
+      .filter(m => m.type === 'ISSUE' || m.type === 'WASTE')
+      .reduce((sum, m) => {
+        const ts = +parseStamp(m.datetime);
+        return ts > s && ts <= e ? sum + (m.value || 0) : sum;
+      }, 0));
+    const consTotal = consPerBin.reduce((a, b) => a + b, 0);
+    const dailyCOGS = consTotal / daysInPeriod;
     const doiVal = dailyCOGS > 0 ? (nowInvValue / dailyCOGS) : Infinity;
     
     let cum = 0;
     const doiSeriesRaw = bins.map(([, e], i) => {
-      cum += cogsPerBin[i];
+      cum += consPerBin[i];
       const daysSoFar = Math.max((e - rangeStart) / ONE_DAY, 1e-6);
       const daily = cum / daysSoFar;
       const invEndBin = invAt(e);
@@ -1256,16 +1275,16 @@ export default function InventoryWireframe() {
                 <div className="overflow-x-auto">
                   <Table className="min-w-[1100px] table-fixed">
                     <colgroup>
-                      <col style={{ width: 220 }} />  {/* Category */}
-                      <col style={{ width: 140 }} />  {/* SKU */}
-                      <col style={{ width: 260 }} />  {/* Description */}
-                      <col style={{ width: 80 }} />   {/* U/M */}
-                      <col style={{ width: 100 }} />  {/* Type */}
-                      <col style={{ width: 110 }} />  {/* On hand */}
-                      <col style={{ width: 130 }} />  {/* Avg. cost (FIFO) */}
-                      <col style={{ width: 130 }} />  {/* Asset value */}
-                      <col style={{ width: 110 }} />  {/* Minimum */}
-                      <col style={{ width: 140 }} />  {/* Status */}
+                      <col style={{ width: 220 }} />
+                      <col style={{ width: 140 }} />
+                      <col style={{ width: 260 }} />
+                      <col style={{ width: 80 }} />
+                      <col style={{ width: 100 }} />
+                      <col style={{ width: 110 }} />
+                      <col style={{ width: 130 }} />
+                      <col style={{ width: 130 }} />
+                      <col style={{ width: 110 }} />
+                      <col style={{ width: 140 }} />
                     </colgroup>
                     <TableHeader>
                       <TableRow>

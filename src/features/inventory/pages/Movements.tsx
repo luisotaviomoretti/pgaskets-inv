@@ -85,7 +85,7 @@ export default function Movements({ movements = [], onDeleteMovement, onExportEx
 
   // i18n-ready formatters (use default locale; currency can be wired to env)
   const currencyFmt = useMemo(
-    () => new Intl.NumberFormat(undefined, { style: 'currency', currency: 'USD' }),
+    () => new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', currencyDisplay: 'symbol' }),
     []
   );
   const dateTimeFmt = useMemo(

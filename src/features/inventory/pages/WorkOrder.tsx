@@ -259,12 +259,39 @@ export default function WorkOrder({ skus, layersBySku, onUpdateLayers, onUpdateS
     [totalRawQty, totalWasteQty]
   );
 
+  // Check if units are compatible for auto mode
+  const canUseAutoMode = useMemo(() => {
+    const rawUnits = rawMaterials
+      .filter(r => r.skuId && r.qty > 0)
+      .map(r => skus.find(s => s.id === r.skuId)?.unit)
+      .filter(Boolean);
+    
+    return rawUnits.length === 0 || rawUnits.every(unit => unit === rawUnits[0]);
+  }, [rawMaterials, skus]);
+
+  // Mixed units exception case - force MANUAL mode with no validation
+  const hasMixedUnits = useMemo(() => {
+    const rawUnits = rawMaterials
+      .filter(r => r.skuId && r.qty > 0)
+      .map(r => skus.find(s => s.id === r.skuId)?.unit)
+      .filter(Boolean);
+    
+    return rawUnits.length > 1 && !rawUnits.every(unit => unit === rawUnits[0]);
+  }, [rawMaterials, skus]);
+
   // Auto-calculate output quantity when in AUTO mode
   useEffect(() => {
     if (outputMode === 'AUTO') {
       setWoProducedQty(netOutputQty);
     }
   }, [outputMode, netOutputQty]);
+
+  // Force MANUAL mode when units are mixed
+  useEffect(() => {
+    if (hasMixedUnits && outputMode === 'AUTO') {
+      setOutputMode('MANUAL');
+    }
+  }, [hasMixedUnits, outputMode]);
 
   // Close modal on ESC
   useEffect(() => {
@@ -306,16 +333,6 @@ export default function WorkOrder({ skus, layersBySku, onUpdateLayers, onUpdateS
     return () => window.removeEventListener('keydown', onKey);
   }, [confirmOpen]);
 
-  // Check if units are compatible for auto mode
-  const canUseAutoMode = useMemo(() => {
-    const rawUnits = rawMaterials
-      .filter(r => r.skuId && r.qty > 0)
-      .map(r => skus.find(s => s.id === r.skuId)?.unit)
-      .filter(Boolean);
-    
-    return rawUnits.length === 0 || rawUnits.every(unit => unit === rawUnits[0]);
-  }, [rawMaterials, skus]);
-
   // Inline validation similar to Receiving
   useEffect(() => {
     const newErrors: Record<string, string> = {};
@@ -353,8 +370,8 @@ export default function WorkOrder({ skus, layersBySku, onUpdateLayers, onUpdateS
 
     // Finished product name required
     if (!woOutputName.trim()) newErrors['outputName'] = 'Finished product name is required';
-    // Produced qty required in MANUAL
-    if (outputMode === 'MANUAL' && woProducedQty <= 0) newErrors['producedQty'] = 'Produced quantity must be greater than 0';
+    // Produced qty required in MANUAL (except for mixed units exception)
+    if (outputMode === 'MANUAL' && !hasMixedUnits && woProducedQty <= 0) newErrors['producedQty'] = 'Produced quantity must be greater than 0';
 
     setErrors(newErrors);
   }, [rawMaterials, woOutputName, outputMode, woProducedQty, layersBySku]);
@@ -418,23 +435,26 @@ export default function WorkOrder({ skus, layersBySku, onUpdateLayers, onUpdateS
   // NAV-80: Validation function to determine if WO can be finalized (multi-SKU)
   const canFinalizeWO = useMemo(() => {
     if (!woOutputName.trim()) return false;
-    if (outputMode === 'MANUAL' && woProducedQty <= 0) return false;
+    if (outputMode === 'MANUAL' && !hasMixedUnits && woProducedQty <= 0) return false;
     if (outputMode === 'AUTO' && !canUseAutoMode) return false;
 
     const activeRaw = rawMaterials.filter(r => r.skuId && r.qty > 0);
     if (activeRaw.length === 0) return false;
 
-    // Invariant: total raw = produced + total waste
-    const totalConsumption = totalRawQty;
-    const totalOutput = (outputMode === 'AUTO' ? netOutputQty : woProducedQty) + totalWasteQty;
-    if (Math.abs(totalConsumption - totalOutput) > 0.01) return false;
+    // Skip consumption=production+waste validation for mixed units exception
+    if (!hasMixedUnits) {
+      // Invariant: total raw = produced + total waste
+      const totalConsumption = totalRawQty;
+      const totalOutput = (outputMode === 'AUTO' ? netOutputQty : woProducedQty) + totalWasteQty;
+      if (Math.abs(totalConsumption - totalOutput) > 0.01) return false;
+    }
 
     // Sufficient inventory per SKU
     for (const p of multiSkuPlans) {
       if (!p.canFulfill) return false;
     }
     return true;
-  }, [woOutputName, outputMode, woProducedQty, canUseAutoMode, rawMaterials, totalRawQty, totalWasteQty, netOutputQty, multiSkuPlans]);
+  }, [woOutputName, outputMode, woProducedQty, canUseAutoMode, rawMaterials, totalRawQty, totalWasteQty, netOutputQty, multiSkuPlans, hasMixedUnits]);
 
   const finalizeWO = async () => {
     // Basic validations mirroring canFinalizeWO
@@ -442,7 +462,7 @@ export default function WorkOrder({ skus, layersBySku, onUpdateLayers, onUpdateS
       alert('Finished product name is required to finalize Work Order');
       return;
     }
-    if (outputMode === 'MANUAL' && woProducedQty <= 0) {
+    if (outputMode === 'MANUAL' && !hasMixedUnits && woProducedQty <= 0) {
       alert('Produced quantity must be greater than 0');
       return;
     }
@@ -458,11 +478,14 @@ export default function WorkOrder({ skus, layersBySku, onUpdateLayers, onUpdateS
     }
 
     const producedQty = outputMode === 'AUTO' ? netOutputQty : woProducedQty;
-    const totalConsumption = totalRawQty;
-    const totalOutput = producedQty + totalWasteQty;
-    if (Math.abs(totalConsumption - totalOutput) > 0.01) {
-      alert(`Consumption (${totalConsumption}) must equal production + waste (${totalOutput})`);
-      return;
+    // Skip consumption=production+waste validation for mixed units exception
+    if (!hasMixedUnits) {
+      const totalConsumption = totalRawQty;
+      const totalOutput = producedQty + totalWasteQty;
+      if (Math.abs(totalConsumption - totalOutput) > 0.01) {
+        alert(`Consumption (${totalConsumption}) must equal production + waste (${totalOutput})`);
+        return;
+      }
     }
 
     // Ensure sufficient inventory per SKU
@@ -719,19 +742,22 @@ export default function WorkOrder({ skus, layersBySku, onUpdateLayers, onUpdateS
                 </div>
                 <div className="md:col-span-6 lg:col-span-3">
                   <Label className="mb-1.5 block">Output mode</Label>
-                  <Select value={outputMode} onValueChange={(v) => setOutputMode(v as OutputMode)}>
+                  <Select value={outputMode} onValueChange={(v) => setOutputMode(v as OutputMode)} disabled={hasMixedUnits}>
                     <SelectTrigger className="h-10 w-full"><SelectValue placeholder="Mode" /></SelectTrigger>
                     <SelectContent>
                       <SelectItem value="AUTO">AUTO (Σ RAW - Σ Waste)</SelectItem>
                       <SelectItem value="MANUAL">MANUAL</SelectItem>
                     </SelectContent>
                   </Select>
-                  {outputMode === 'AUTO' && !canUseAutoMode && (
+                  {hasMixedUnits && (
+                    <div className="text-xs text-blue-600 mt-1">Mixed units detected - MANUAL mode required (any quantity allowed).</div>
+                  )}
+                  {outputMode === 'AUTO' && !canUseAutoMode && !hasMixedUnits && (
                     <div className="text-xs text-amber-600 mt-1">Units across RAW SKUs differ; AUTO not allowed.</div>
                   )}
                 </div>
                 <div className="md:col-span-6 lg:col-span-3">
-                  <Label className="mb-1.5 block">Produced quantity{outputMode === 'MANUAL' ? ' *' : ''}</Label>
+                  <Label className="mb-1.5 block">Produced quantity{outputMode === 'MANUAL' && !hasMixedUnits ? ' *' : ''}</Label>
                   <Input 
                     id="producedQty"
                     type="number" 
@@ -743,7 +769,10 @@ export default function WorkOrder({ skus, layersBySku, onUpdateLayers, onUpdateS
                     aria-describedby={errors.producedQty ? 'producedQty-error' : undefined}
                     disabled={outputMode === 'AUTO'}
                   />
-                  {outputMode === 'MANUAL' && errors.producedQty && <ErrorMessage id="producedQty-error" message={errors.producedQty} />}
+                  {outputMode === 'MANUAL' && !hasMixedUnits && errors.producedQty && <ErrorMessage id="producedQty-error" message={errors.producedQty} />}
+                  {hasMixedUnits && (
+                    <div className="text-xs text-blue-600 mt-1">Mixed units: any quantity allowed.</div>
+                  )}
                 </div>
                 {/* Row 2 */}
                 <div className="md:col-span-12 lg:col-span-6">
