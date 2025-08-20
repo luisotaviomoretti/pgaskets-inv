@@ -30,38 +30,159 @@ export interface MetricCardProps {
   valueFormatter?: (v: number) => string;
   /** Optional explanatory content shown in a small popover when clicking the info icon next to the title */
   infoContent?: React.ReactNode;
+  /** Optional labels for the X-axis of the chart */
+  labels?: string[];
+  /** Chart type: 'bars' for bar chart, 'line' for line chart */
+  chartType?: 'bars' | 'line';
 }
 
 /**
- * Subcomponente interno: SparkBars
- * Barras verticais simples para visualizar séries curtas.
+ * Subcomponente interno: SparkLine
+ * Gráfico de linha simples para visualizar séries de tendência.
  */
-function SparkBars({ data, height = 40, formatValue }: { data: number[]; height?: number; formatValue?: (v: number) => string }) {
+function SparkLine({ data, height = 40, formatValue, labels }: { data: number[]; height?: number; formatValue?: (v: number) => string; labels?: string[] }) {
   const [hovered, setHovered] = useState<number | null>(null);
   const max = Math.max(...data, 1);
-  const BAR_W = 8, GAP = 4;
+  const min = Math.min(...data, 0);
+  const range = max - min || 1;
+  const POINT_SIZE = 3, GAP = 12;
+  
+  // Criar pontos da linha
+  const points = data.map((v, i) => {
+    const x = i * (16 + GAP) + 8; // centralizado no "slot" da barra
+    const y = height - ((v - min) / range) * height;
+    return { x, y, value: v };
+  });
+  
+  // Criar path SVG da linha
+  const pathData = points.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x} ${p.y}`).join(' ');
+  
   return (
-    <div className="relative flex items-end gap-1 h-full" style={{ minHeight: height }} onMouseLeave={() => setHovered(null)}>
-      {data.map((v, i) => (
-        <div
-          key={i}
-          className="w-2 rounded-sm bg-black/90 transition-opacity"
-          style={{ height: `${Math.max(6, Math.round((v / max) * height))}px`, opacity: hovered === null || hovered === i ? 1 : 0.25 }}
-          onMouseEnter={() => setHovered(i)}
-          title={formatValue ? formatValue(v) : String(v)}
-          aria-label={`bar-${i}`}
-        />
-      ))}
-      {hovered !== null && (
-        <div className="absolute -top-6 text-[10px] px-1.5 py-0.5 rounded bg-black text-white shadow pointer-events-none" style={{ left: hovered * (BAR_W + GAP) }}>
-          {formatValue ? formatValue(data[hovered]) : data[hovered]}
+    <div className="relative h-full" style={{ minHeight: height + (labels ? 16 : 0) }}>
+      {/* Linha SVG */}
+      <div className="relative" style={{ height: height }} onMouseLeave={() => setHovered(null)}>
+        <svg className="absolute inset-0 w-full h-full" viewBox={`0 0 ${(data.length - 1) * (16 + GAP) + 16} ${height}`}>
+          <path 
+            d={pathData} 
+            stroke="black" 
+            strokeWidth="2" 
+            fill="none"
+            opacity={0.9}
+          />
+          {/* Pontos interativos */}
+          {points.map((point, i) => (
+            <circle
+              key={i}
+              cx={point.x}
+              cy={point.y}
+              r={POINT_SIZE}
+              fill="black"
+              opacity={hovered === null || hovered === i ? 1 : 0.3}
+              className="cursor-pointer transition-opacity"
+              onMouseEnter={() => setHovered(i)}
+              title={formatValue ? formatValue(point.value) : String(point.value)}
+            />
+          ))}
+        </svg>
+        
+        {/* Tooltip */}
+        {hovered !== null && (
+          <div className="absolute -top-6 text-[10px] px-1.5 py-0.5 rounded bg-black text-white shadow pointer-events-none" style={{ left: points[hovered].x - 15 }}>
+            <div>{formatValue ? formatValue(data[hovered]) : data[hovered]}</div>
+            {hovered > 0 && (
+              <div className="text-[9px] opacity-80">
+                {(() => {
+                  const current = data[hovered];
+                  const previous = data[hovered - 1];
+                  if (previous === 0) return '—';
+                  const change = ((current - previous) / Math.abs(previous)) * 100;
+                  const sign = change >= 0 ? '+' : '';
+                  return `${sign}${change.toFixed(1)}%`;
+                })()}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+      
+      {/* Labels abaixo dos pontos */}
+      {labels && (
+        <div className="flex gap-3 mt-1">
+          {labels.map((label, i) => (
+            <div
+              key={i}
+              className="w-4 text-[8px] text-slate-400 text-center"
+              style={{ fontSize: '7px', lineHeight: '10px' }}
+            >
+              {label}
+            </div>
+          ))}
         </div>
       )}
     </div>
   );
 }
 
-function MetricCardBase({ title, primary, secondary, unitPrimary, unitSecondary, series, direction, valueFormatter, infoContent }: MetricCardProps) {
+/**
+ * Subcomponente interno: SparkBars
+ * Barras verticais simples para visualizar séries curtas.
+ */
+function SparkBars({ data, height = 40, formatValue, labels }: { data: number[]; height?: number; formatValue?: (v: number) => string; labels?: string[] }) {
+  const [hovered, setHovered] = useState<number | null>(null);
+  const max = Math.max(...data, 1);
+  const BAR_W = 16, GAP = 12;
+  return (
+    <div className="relative h-full" style={{ minHeight: height + (labels ? 16 : 0) }}>
+      {/* Barras */}
+      <div className="relative flex items-end gap-3" style={{ height: height }} onMouseLeave={() => setHovered(null)}>
+        {data.map((v, i) => (
+          <div
+            key={i}
+            className="w-4 rounded-sm bg-black/90 transition-opacity"
+            style={{ height: `${Math.max(8, Math.round((v / max) * height))}px`, opacity: hovered === null || hovered === i ? 1 : 0.25 }}
+            onMouseEnter={() => setHovered(i)}
+            title={formatValue ? formatValue(v) : String(v)}
+            aria-label={`bar-${i}`}
+          />
+        ))}
+        {hovered !== null && (
+          <div className="absolute -top-6 text-[10px] px-1.5 py-0.5 rounded bg-black text-white shadow pointer-events-none" style={{ left: hovered * (BAR_W + GAP) }}>
+            <div>{formatValue ? formatValue(data[hovered]) : data[hovered]}</div>
+            {hovered > 0 && (
+              <div className="text-[9px] opacity-80">
+                {(() => {
+                  const current = data[hovered];
+                  const previous = data[hovered - 1];
+                  if (previous === 0) return '—';
+                  const change = ((current - previous) / Math.abs(previous)) * 100;
+                  const sign = change >= 0 ? '+' : '';
+                  return `${sign}${change.toFixed(1)}%`;
+                })()}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+      
+      {/* Labels abaixo das barras */}
+      {labels && (
+        <div className="flex gap-3 mt-1">
+          {labels.map((label, i) => (
+            <div
+              key={i}
+              className="w-4 text-[8px] text-slate-400 text-center"
+              style={{ fontSize: '7px', lineHeight: '10px' }}
+            >
+              {label}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function MetricCardBase({ title, primary, secondary, unitPrimary, unitSecondary, series, direction, valueFormatter, infoContent, labels, chartType = 'bars' }: MetricCardProps) {
   const delta = useMemo(() => {
     if (!series || series.length < 2) return 0;
     const first = series[0];
@@ -121,8 +242,12 @@ function MetricCardBase({ title, primary, secondary, unitPrimary, unitSecondary,
           <div className={`mt-2 text-xs ${isFlat ? 'text-slate-500' : isUp ? 'text-emerald-600' : 'text-red-600'}`}>
             {isFlat ? '±0%' : `${isUp ? '+' : ''}${delta.toFixed(1)}%`}
           </div>
-          <div className="mt-3 h-14">
-            <SparkBars data={series} height={56} formatValue={valueFormatter} />
+          <div className="mt-3 h-24">
+            {chartType === 'line' ? (
+              <SparkLine data={series} height={80} formatValue={valueFormatter} labels={labels} />
+            ) : (
+              <SparkBars data={series} height={80} formatValue={valueFormatter} labels={labels} />
+            )}
           </div>
         </div>
       </CardContent>

@@ -65,6 +65,129 @@ function buildBins(start: number, end: number, n = 7): Array<[number, number]> {
   return out;
 }
 
+// Tipos para granularidade adaptativa
+type Granularity = 'hourly' | 'daily' | 'weekly' | 'monthly';
+
+// Determina granularidade baseada no período selecionado
+function getGranularity(period: PeriodOption, start: number, end: number): Granularity {
+  if (period === 'today') return 'hourly';
+  if (period === 'last7') return 'daily';
+  if (period === 'month') return 'weekly';
+  if (period === 'quarter') return 'monthly';
+  
+  // Custom range - lógica automática
+  const days = (end - start) / (1000 * 60 * 60 * 24);
+  if (days <= 7) return 'daily';
+  if (days <= 90) return 'weekly';
+  return 'monthly';
+}
+
+// Funções específicas para diferentes granularidades
+function buildHourlyBins(start: number, end: number): Array<[number, number]> {
+  const bins: Array<[number, number]> = [];
+  const startDate = new Date(start);
+  const endDate = new Date(end);
+  
+  // Arredondar para horas inteiras
+  const firstHour = new Date(startDate.getFullYear(), startDate.getMonth(), startDate.getDate(), startDate.getHours());
+  const lastHour = new Date(endDate.getFullYear(), endDate.getMonth(), endDate.getDate(), endDate.getHours() + 1);
+  
+  let current = firstHour.getTime();
+  while (current < lastHour.getTime()) {
+    const next = current + (60 * 60 * 1000); // +1 hora
+    bins.push([current, Math.min(next, end)]);
+    current = next;
+  }
+  
+  // Limitar a 7 bins, pegando os mais recentes
+  return bins.slice(-7);
+}
+
+function buildDailyBins(start: number, end: number): Array<[number, number]> {
+  const bins: Array<[number, number]> = [];
+  const startDate = new Date(start);
+  const endDate = new Date(end);
+  
+  // Arredondar para dias inteiros
+  const firstDay = new Date(startDate.getFullYear(), startDate.getMonth(), startDate.getDate());
+  const lastDay = new Date(endDate.getFullYear(), endDate.getMonth(), endDate.getDate() + 1);
+  
+  let current = firstDay.getTime();
+  while (current < lastDay.getTime()) {
+    const next = current + (24 * 60 * 60 * 1000); // +1 dia
+    bins.push([current, Math.min(next, end)]);
+    current = next;
+  }
+  
+  // Limitar a 7 bins, pegando os mais recentes
+  return bins.slice(-7);
+}
+
+function buildWeeklyBins(start: number, end: number): Array<[number, number]> {
+  const bins: Array<[number, number]> = [];
+  const endDate = new Date(end);
+  
+  // Começar da semana mais recente e ir voltando
+  let current = new Date(endDate.getFullYear(), endDate.getMonth(), endDate.getDate());
+  
+  // Encontrar o domingo mais recente (início da semana)
+  while (current.getDay() !== 0) {
+    current.setDate(current.getDate() - 1);
+  }
+  
+  const weekEnd = current.getTime() + (7 * 24 * 60 * 60 * 1000);
+  bins.unshift([current.getTime(), Math.min(weekEnd, end)]);
+  
+  // Adicionar semanas anteriores
+  for (let i = 1; i < 7; i++) {
+    const weekStart = current.getTime() - (i * 7 * 24 * 60 * 60 * 1000);
+    const weekEndTime = current.getTime() - ((i - 1) * 7 * 24 * 60 * 60 * 1000);
+    
+    if (weekStart >= start) {
+      bins.unshift([Math.max(weekStart, start), weekEndTime]);
+    }
+  }
+  
+  return bins;
+}
+
+function buildMonthlyBins(start: number, end: number): Array<[number, number]> {
+  const bins: Array<[number, number]> = [];
+  const endDate = new Date(end);
+  
+  // Começar do mês atual e ir voltando
+  let current = new Date(endDate.getFullYear(), endDate.getMonth(), 1);
+  
+  // Adicionar mês atual
+  const nextMonth = new Date(current.getFullYear(), current.getMonth() + 1, 1);
+  bins.unshift([current.getTime(), Math.min(nextMonth.getTime(), end)]);
+  
+  // Adicionar meses anteriores
+  for (let i = 1; i < 7; i++) {
+    const monthStart = new Date(current.getFullYear(), current.getMonth() - i, 1);
+    const monthEnd = new Date(current.getFullYear(), current.getMonth() - i + 1, 1);
+    
+    if (monthStart.getTime() >= start) {
+      bins.unshift([Math.max(monthStart.getTime(), start), monthEnd.getTime()]);
+    }
+  }
+  
+  return bins;
+}
+
+// Função principal que substitui buildBins
+function buildAdaptiveBins(period: PeriodOption, start: number, end: number): Array<[number, number]> {
+  const granularity = getGranularity(period, start, end);
+  
+  switch(granularity) {
+    case 'hourly': return buildHourlyBins(start, end);
+    case 'daily': return buildDailyBins(start, end);
+    case 'weekly': return buildWeeklyBins(start, end);
+    case 'monthly': return buildMonthlyBins(start, end);
+    default: return buildBins(start, end, 7); // fallback
+  }
+}
+
 // Dedicated SKUs Modal shell component to enforce consistent layout and a11y
 function SKUsModal({ children, onClose, onToggleAdd, addOpen }: { children: React.ReactNode; onClose: () => void; onToggleAdd: () => void; addOpen: boolean }) {
   const modalRef = React.useRef<HTMLDivElement>(null);
@@ -149,6 +272,108 @@ function parseStamp(datetime: string | Date): Date {
   return new Date(datetime.replace(' ', 'T'));
 }
 
+// Custom hook for resizable columns
+function useResizableColumns() {
+  const defaultWidths = {
+    category: 220,
+    sku: 140,
+    description: 260,
+    unit: 80,
+    type: 100,
+    onHand: 110,
+    avgCost: 130,
+    assetValue: 130,
+    minimum: 110,
+    status: 140
+  };
+
+  const [columnWidths, setColumnWidths] = useState(() => {
+    const stored = localStorage.getItem('inventory-column-widths');
+    return stored ? { ...defaultWidths, ...JSON.parse(stored) } : defaultWidths;
+  });
+
+  const [isResizing, setIsResizing] = useState(false);
+  const [resizingColumn, setResizingColumn] = useState<string | null>(null);
+
+  const handleMouseDown = useCallback((columnKey: string, event: React.MouseEvent) => {
+    event.preventDefault();
+    setIsResizing(true);
+    setResizingColumn(columnKey);
+  }, []);
+
+  const handleMouseMove = useCallback((event: MouseEvent) => {
+    if (!isResizing || !resizingColumn) return;
+
+    const table = document.querySelector('.resizable-table');
+    if (!table) return;
+
+    const tableRect = table.getBoundingClientRect();
+    const relativeX = event.clientX - tableRect.left;
+    
+    // Calculate new width based on mouse position
+    let newWidth = relativeX;
+    
+    // Find current column position to calculate proper width
+    const columns = Object.keys(columnWidths);
+    const currentColumnIndex = columns.indexOf(resizingColumn);
+    
+    if (currentColumnIndex > 0) {
+      // Subtract widths of previous columns
+      const previousColumnsWidth = columns
+        .slice(0, currentColumnIndex)
+        .reduce((sum, key) => sum + columnWidths[key as keyof typeof columnWidths], 0);
+      newWidth = relativeX - previousColumnsWidth;
+    }
+
+    // Set minimum width
+    newWidth = Math.max(newWidth, 60);
+
+    setColumnWidths(prev => ({
+      ...prev,
+      [resizingColumn]: newWidth
+    }));
+  }, [isResizing, resizingColumn, columnWidths]);
+
+  const handleMouseUp = useCallback(() => {
+    if (isResizing) {
+      setIsResizing(false);
+      setResizingColumn(null);
+      
+      // Save to localStorage
+      localStorage.setItem('inventory-column-widths', JSON.stringify(columnWidths));
+    }
+  }, [isResizing, columnWidths]);
+
+  // Event listeners
+  useEffect(() => {
+    if (isResizing) {
+      document.addEventListener('mousemove', handleMouseMove);
+      document.addEventListener('mouseup', handleMouseUp);
+      document.body.style.cursor = 'col-resize';
+      document.body.style.userSelect = 'none';
+    }
+
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+  }, [isResizing, handleMouseMove, handleMouseUp]);
+
+  const resetWidths = useCallback(() => {
+    setColumnWidths(defaultWidths);
+    localStorage.removeItem('inventory-column-widths');
+  }, []);
+
+  return {
+    columnWidths,
+    handleMouseDown,
+    resetWidths,
+    isResizing
+  };
+}
+
 // Package icon for Receiving tab
 function Package({ className }: { className?: string }) {
   return (
@@ -177,21 +402,6 @@ function Activity({ className }: { className?: string }) {
 }
 
 // --- Missing UI components causing runtime crashes ---
-function ChevronDown({ className }: { className?: string }) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor">
-      <path d="M6 9l6 6 6-6" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  );
-}
-
-function ChevronUp({ className }: { className?: string }) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor">
-      <path d="M18 15l-6-6-6 6" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  );
-}
 
 function Layers({ className }: { className?: string }) {
   return (
@@ -717,6 +927,7 @@ function VendorsManager({
 
 export default function InventoryWireframe() {
   const { user, signOut } = useAuth();
+  const { columnWidths, handleMouseDown, resetWidths } = useResizableColumns();
   const [tab, setTab] = useState('dashboard');
   const [period, setPeriod] = useState<PeriodOption>('last7');
   const [customStart, setCustomStart] = useState<string>('');
@@ -805,10 +1016,6 @@ export default function InventoryWireframe() {
       // keep UI usable even if vendors fail to load
     }
   }, []);
-  const [expanded, setExpanded] = useState<Record<ProductCategory, boolean>>({
-    'Adhesives': false, 'Boxes': false, 'Cork/Rubber': false, 'Polyurethane Ester': false,
-    'Polyurethane Ether': false, 'Felt': false, 'Fibre Foam': false, 'Film and Foil': false,
-  });
   
   // Quick menu state
   const [vendorsOpen, setVendorsOpen] = useState(false);
@@ -817,6 +1024,9 @@ export default function InventoryWireframe() {
   
   // Movements export state
   const [movementsExportOpen, setMovementsExportOpen] = useState(false);
+  
+  // Sort mode state
+  const [sortMode, setSortMode] = useState<'default' | 'redFlags' | 'quantity' | 'category'>('default');
 
   // UX Polish: Modal ESC key handler and body scroll lock
   useEffect(() => {
@@ -863,16 +1073,130 @@ export default function InventoryWireframe() {
     loadMovements();
   }, [period, customStart, customEnd, loadMovements]);
 
-  const { bins } = useMemo(() => {
-    const [s, e] = getRange(period, customStart, customEnd);
-    return { bins: buildBins(s, e, 7) };
-  }, [period, customStart, customEnd]);
-
-  const toggleCat = (c: ProductCategory) => setExpanded(prev => ({ ...prev, [c]: !prev[c] }));
   const avgCostFor = (skuId: string) => {
     const v = avgCostMap[skuId];
     return typeof v === 'number' ? v : fifoAvgCost(layersBySku[skuId]);
   };
+
+  const { bins, periodLabels, granularity, inventoryValues, cogsValues } = useMemo(() => {
+    const [s, e] = getRange(period, customStart, customEnd);
+    const bins = buildAdaptiveBins(period, s, e);
+    const granularity = getGranularity(period, s, e);
+    
+    // Option A (fallback simplificado): Calcular com saldo de abertura e carry-forward
+    // TODO: Option B (FIFO por movimento) - usar custos históricos reais por movimento
+    
+    // 1. Calcular SALDO DE ABERTURA por SKU no início do período
+    const openingQtyBySku: Record<string, number> = {};
+    
+    // Obter estoque atual e subtrair movements dentro do período
+    skus.forEach(sku => {
+      const currentQty = sku.onHand ?? 0;
+      
+      // Calcular movements líquidos dentro do período selecionado
+      const netMovementsInPeriod = movementLog
+        .filter(m => {
+          const ts = parseStamp(m.datetime).getTime();
+          return ts >= s && ts <= e && m.skuId === sku.id;
+        })
+        .reduce((net, m) => {
+          if (m.type === 'RECEIVE' || m.type === 'PRODUCE') {
+            return net + m.qty;
+          } else if (m.type === 'ISSUE' || m.type === 'WASTE') {
+            return net - m.qty;
+          }
+          return net;
+        }, 0);
+      
+      // Saldo de abertura = Estoque atual - movements líquidos do período
+      openingQtyBySku[sku.id] = Math.max(0, currentQty - netMovementsInPeriod);
+    });
+    
+    // 2. Loop sequencial sobre bins acumulando estoque por SKU (carry-forward)
+    const inventoryValues: number[] = [];
+    const stockCarryForward: Record<string, number> = { ...openingQtyBySku };
+    
+    bins.forEach(([binStart, binEnd]) => {
+      // Aplicar movements do bin atual
+      movementLog
+        .filter(m => {
+          const ts = parseStamp(m.datetime).getTime();
+          return ts >= binStart && ts < binEnd;
+        })
+        .forEach(m => {
+          if (!stockCarryForward[m.skuId]) stockCarryForward[m.skuId] = 0;
+          
+          if (m.type === 'RECEIVE' || m.type === 'PRODUCE') {
+            stockCarryForward[m.skuId] += m.qty;
+          } else if (m.type === 'ISSUE' || m.type === 'WASTE') {
+            stockCarryForward[m.skuId] -= m.qty;
+          }
+          
+          // Não permitir estoque negativo
+          stockCarryForward[m.skuId] = Math.max(0, stockCarryForward[m.skuId]);
+        });
+      
+      // Calcular valor total do estoque ao final do bin
+      let binTotalValue = 0;
+      Object.entries(stockCarryForward).forEach(([skuId, qty]) => {
+        if (qty > 0) {
+          // Cost basis simplificado: usar custo médio atual por SKU (Option A)
+          const avgCost = avgCostFor(skuId);
+          if (avgCost) {
+            binTotalValue += qty * avgCost;
+          }
+        }
+      });
+      
+      inventoryValues.push(binTotalValue);
+    });
+    
+    // 3. Calcular COGS por bin (aproximação usando custo médio atual)
+    const cogsValues = bins.map(([binStart, binEnd]) => {
+      return movementLog
+        .filter(m => {
+          const movementTime = parseStamp(m.datetime).getTime();
+          return m.type === 'ISSUE' && movementTime >= binStart && movementTime < binEnd;
+        })
+        .reduce((total, m) => {
+          // COGS por bin = Σ (ISSUE movements no bin × custo médio atual do SKU) - fallback
+          const avgCost = avgCostFor(m.skuId);
+          return total + (avgCost ? m.qty * avgCost : 0);
+        }, 0);
+    });
+    
+    // Gerar labels adaptativos baseados na granularidade
+    const labels = bins.map((bin, i) => {
+      // Última barra sempre é "Now"
+      if (i === bins.length - 1) return "Now";
+      
+      const binEndDate = new Date(bin[1]);
+      const now = new Date();
+      
+      switch(granularity) {
+        case 'hourly': {
+          const hoursAgo = Math.ceil((now.getTime() - bin[1]) / (1000 * 60 * 60));
+          return hoursAgo === 0 ? "Now" : `-${hoursAgo}h`;
+        }
+        case 'daily': {
+          const daysAgo = Math.ceil((now.getTime() - bin[1]) / (1000 * 60 * 60 * 24));
+          return `-${daysAgo}d`;
+        }
+        case 'weekly': {
+          const weeksAgo = Math.ceil((now.getTime() - bin[1]) / (1000 * 60 * 60 * 24 * 7));
+          return `-${weeksAgo}w`;
+        }
+        case 'monthly': {
+          const monthsAgo = Math.ceil((now.getTime() - bin[1]) / (1000 * 60 * 60 * 24 * 30));
+          return `-${monthsAgo}m`;
+        }
+        default:
+          return `P${i + 1}`;
+      }
+    });
+    
+    return { bins, periodLabels: labels, granularity, inventoryValues, cogsValues };
+  }, [period, customStart, customEnd, movementLog, avgCostMap, layersBySku, skus]);
 
   // INV-02 & INV-03: Excel export functions
   const exportToExcel = async (redFlagsOnly = false) => {
@@ -998,20 +1322,56 @@ export default function InventoryWireframe() {
     toast.success(`Exported ${filteredMovements.length} movement record(s) to ${filename}`);
   };
 
-  // Group SKUs by Category
-  const grouped = useMemo(() => {
-    // Start with known categories but allow dynamic ones to avoid push on undefined
-    const map: Record<string, SKU[]> = {
-      'Adhesives': [], 'Boxes': [], 'Cork/Rubber': [], 'Polyurethane Ester': [],
-      'Polyurethane Ether': [], 'Felt': [], 'Fibre Foam': [], 'Film and Foil': [],
-    };
-    for (const s of skus) {
-      const key = s.productCategory || 'Uncategorized';
-      if (!map[key]) map[key] = [];
-      map[key].push(s);
-    }
-    return map as Record<ProductCategory, SKU[]> as any;
+  // Flatten SKUs with category for each row
+  const flattenedSkus = useMemo(() => {
+    return skus.map(sku => ({
+      ...sku,
+      categoryName: sku.productCategory || 'Uncategorized'
+    }));
   }, [skus]);
+
+  // Sort SKUs based on selected mode
+  const sortedSkus = useMemo(() => {
+    if (sortMode === 'default') return flattenedSkus;
+    
+    const sorted = [...flattenedSkus].sort((a, b) => {
+      if (sortMode === 'redFlags') {
+        // Botão 1: Red flags primeiro, depois por quantidade
+        const aQty = a.onHand ?? 0;
+        const aMin = a.min ?? 0;
+        const bQty = b.onHand ?? 0;
+        const bMin = b.min ?? 0;
+        
+        const aIsRedFlag = aQty < aMin;
+        const bIsRedFlag = bQty < bMin;
+        
+        // Primeiro nível: Red flags primeiro
+        if (aIsRedFlag && !bIsRedFlag) return -1;
+        if (!aIsRedFlag && bIsRedFlag) return 1;
+        
+        // Segundo nível: Dentro do mesmo grupo, maior quantidade primeiro
+        return bQty - aQty;
+      }
+      
+      if (sortMode === 'quantity') {
+        // Botão 2: Apenas por quantidade (maior primeiro)
+        return (b.onHand ?? 0) - (a.onHand ?? 0);
+      }
+      
+      if (sortMode === 'category') {
+        // Botão 3: Por categoria alfabética, depois por quantidade decrescente
+        const categoryCompare = a.categoryName.localeCompare(b.categoryName);
+        if (categoryCompare !== 0) return categoryCompare;
+        
+        // Dentro da mesma categoria, maior quantidade primeiro
+        return (b.onHand ?? 0) - (a.onHand ?? 0);
+      }
+      
+      return 0;
+    });
+    
+    return sorted;
+  }, [flattenedSkus, sortMode]);
 
   const TrafficLight = ({ ok }: { ok: boolean }) => (
     <div className="flex items-center gap-2">
@@ -1199,63 +1559,42 @@ export default function InventoryWireframe() {
                 </div>
               </CardHeader>
               <CardContent>
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 max-w-4xl mx-auto">
                   <MetricCard 
-                    title="Total Inventory (qty / value)" 
-                    primary={kpiData.inv.qty.toLocaleString('en-US')} 
-                    unitPrimary="units" 
-                    secondary={fmtMoney(kpiData.inv.value)} 
-                    series={kpiData.inventorySeries} 
+                    title="Total Inventory Value" 
+                    primary={fmtMoney(kpiData.inv.value)} 
+                    secondary="Asset value at current FIFO cost" 
+                    series={inventoryValues} 
+                    chartType="line"
                     valueFormatter={fmtMoney}
+                    labels={periodLabels}
                     infoContent={
                       <div>
-                        <p>Total stock on hand and its asset value at current average cost (FIFO).</p>
+                        <p>Total asset value of inventory at current average cost (FIFO).</p>
                         <ul className="list-disc pl-4 mt-1 space-y-1">
-                          <li><strong>Qty</strong>: Sum of on-hand across SKUs.</li>
-                          <li><strong>Value</strong>: Σ(on-hand × avg. cost per SKU).</li>
-                          <li><strong>Avg. cost</strong> follows FIFO layers.</li>
+                          <li><strong>Calculation</strong>: Σ(on-hand × avg. cost per SKU).</li>
+                          <li><strong>Cost Method</strong>: FIFO (First In, First Out) layers.</li>
+                          <li><strong>Quantity</strong>: {kpiData.inv.qty.toLocaleString('en-US')} units total.</li>
                         </ul>
                       </div>
                     }
                   />
                   <MetricCard 
-                    title="Inventory Turnover" 
-                    primary={Number.isFinite(kpiData.turnoverVal) ? kpiData.turnoverVal.toFixed(2) : '—'} 
-                    unitPrimary="x" 
-                    secondary={`${fmtMoney(kpiData.cogsTotal)} COGS in period`} 
-                    series={kpiData.turnoverSeries} 
-                    valueFormatter={(v) => `${v.toFixed(2)}x`}
+                    title="Cost of Goods Sold (COGS)" 
+                    primary={fmtMoney(kpiData.cogsTotal)} 
+                    secondary="Total cost of inventory issued in period" 
+                    series={cogsValues} 
+                    chartType="bars"
+                    valueFormatter={fmtMoney}
+                    labels={periodLabels}
                     infoContent={
                       <div>
-                        <p>How many times stock "turned over" in the selected period.</p>
+                        <p>Total cost of goods sold (issued from inventory) in the selected period.</p>
                         <ul className="list-disc pl-4 mt-1 space-y-1">
-                          <li><strong>Formula</strong>: Turnover = COGS ÷ Average Inventory.</li>
-                          <li><strong>COGS in period</strong>: {fmtMoney(kpiData.cogsTotal)}</li>
+                          <li><strong>COGS</strong>: {fmtMoney(kpiData.cogsTotal)} from ISSUE movements</li>
                           <li><strong>Inventory (start/end)</strong>: {fmtMoney(kpiData.invStart)} → {fmtMoney(kpiData.invEnd)}</li>
-                          <li><strong>Average Inventory</strong>: ({fmtMoney(kpiData.invStart)} + {fmtMoney(kpiData.invEnd)}) ÷ 2 = {fmtMoney(kpiData.avgInvPeriod)}</li>
-                          <li><strong>Calculation</strong>: {fmtMoney(kpiData.cogsTotal)} ÷ {fmtMoney(kpiData.avgInvPeriod)} = {Number.isFinite(kpiData.turnoverVal) ? kpiData.turnoverVal.toFixed(2) : '—'}x</li>
-                          <li><strong>Units</strong>: "x" (higher means faster turnover).</li>
-                        </ul>
-                      </div>
-                    }
-                  />
-                  <MetricCard 
-                    title="Days of Inventory" 
-                    primary={Number.isFinite(kpiData.doiVal) ? kpiData.doiVal.toFixed(1) : '∞'} 
-                    unitPrimary="days" 
-                    secondary={`Daily COGS: ${fmtMoney(kpiData.dailyCOGS)}`} 
-                    series={kpiData.doiSeries} 
-                    valueFormatter={(v) => `${v.toFixed(1)} days`}
-                    infoContent={
-                      <div>
-                        <p>Estimated number of days current inventory can cover at recent consumption.</p>
-                        <ul className="list-disc pl-4 mt-1 space-y-1">
-                          <li><strong>Formula</strong>: Days = Current inventory ÷ Daily COGS.</li>
-                          <li><strong>Current inventory (value)</strong>: {fmtMoney(kpiData.nowInvValue)}</li>
-                          <li><strong>Days in period</strong>: {Math.round(kpiData.daysInPeriod)} day(s)</li>
-                          <li><strong>Daily COGS</strong>: {fmtMoney(kpiData.dailyCOGS)} = {fmtMoney(kpiData.cogsTotal)} ÷ {Math.round(kpiData.daysInPeriod)}</li>
-                          <li><strong>Calculation</strong>: {fmtMoney(kpiData.nowInvValue)} ÷ {fmtMoney(kpiData.dailyCOGS)} = {Number.isFinite(kpiData.doiVal) ? `${kpiData.doiVal.toFixed(1)} days` : '∞'}</li>
-                          <li>If Daily COGS ≈ 0, the result tends to infinity (∞).</li>
+                          <li><strong>Average Inventory</strong>: {fmtMoney(kpiData.avgInvPeriod)}</li>
+                          <li><strong>Turnover Ratio</strong>: {Number.isFinite(kpiData.turnoverVal) ? kpiData.turnoverVal.toFixed(2) : '—'}x</li>
                         </ul>
                       </div>
                     }
@@ -1275,6 +1614,20 @@ export default function InventoryWireframe() {
                 <div className="flex items-center justify-between gap-2 mb-3">
                   <div className="text-xs text-slate-500">Traffic light: green = above minimum • red = below minimum</div>
                   <div className="flex items-center gap-2">
+                    <Select value={sortMode} onValueChange={(value) => setSortMode(value as typeof sortMode)}>
+                      <SelectTrigger className="h-8 w-[200px] rounded-xl">
+                        <SelectValue placeholder="Sort by..." />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="default">Default</SelectItem>
+                        <SelectItem value="redFlags">🚩 Red Flags First</SelectItem>
+                        <SelectItem value="quantity">📊 By Quantity</SelectItem>
+                        <SelectItem value="category">📂 By Category</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <Button variant="outline" size="sm" onClick={resetWidths} title="Reset column widths to default">
+                      Reset columns
+                    </Button>
                     <Button variant="outline" size="sm" onClick={() => exportToExcel(false)}>Export all (Excel)</Button>
                     <Button size="sm" onClick={() => exportToExcel(true)}>Export red flags (Excel)</Button>
                     <Select onValueChange={(v) => {
@@ -1292,90 +1645,151 @@ export default function InventoryWireframe() {
                 </div>
 
                 <div className="overflow-x-auto">
-                  <Table className="min-w-[1100px] table-fixed">
-                    <colgroup>
-                      <col style={{ width: 220 }} />
-                      <col style={{ width: 140 }} />
-                      <col style={{ width: 260 }} />
-                      <col style={{ width: 80 }} />
-                      <col style={{ width: 100 }} />
-                      <col style={{ width: 110 }} />
-                      <col style={{ width: 130 }} />
-                      <col style={{ width: 130 }} />
-                      <col style={{ width: 110 }} />
-                      <col style={{ width: 140 }} />
-                    </colgroup>
+                  <Table className="min-w-[1100px] table-fixed resizable-table"
+                    style={{ 
+                      width: Object.values(columnWidths).reduce((sum, width) => sum + width, 0) 
+                    }}
+                  >
                     <TableHeader>
                       <TableRow>
-                        <TableHead className="w-[220px] whitespace-nowrap">Category</TableHead>
-                        <TableHead className="whitespace-nowrap">SKU</TableHead>
-                        <TableHead className="whitespace-nowrap">Description</TableHead>
-                        <TableHead className="whitespace-nowrap">U/M</TableHead>
-                        <TableHead className="whitespace-nowrap">Type</TableHead>
-                        <TableHead className="text-right whitespace-nowrap">On hand</TableHead>
-                        <TableHead className="text-right whitespace-nowrap">Avg. cost (FIFO)</TableHead>
-                        <TableHead className="text-right whitespace-nowrap">Asset value</TableHead>
-                        <TableHead className="text-right whitespace-nowrap">Minimum</TableHead>
-                        <TableHead className="whitespace-nowrap">Status</TableHead>
+                        <TableHead 
+                          className="whitespace-nowrap relative"
+                          style={{ width: columnWidths.category, minWidth: 60 }}
+                        >
+                          Category
+                          <div 
+                            className="absolute top-0 right-0 w-1 h-full cursor-col-resize bg-transparent hover:bg-blue-300 opacity-0 hover:opacity-50"
+                            onMouseDown={(e) => handleMouseDown('category', e)}
+                          />
+                        </TableHead>
+                        <TableHead 
+                          className="whitespace-nowrap relative"
+                          style={{ width: columnWidths.sku, minWidth: 60 }}
+                        >
+                          SKU
+                          <div 
+                            className="absolute top-0 right-0 w-1 h-full cursor-col-resize bg-transparent hover:bg-blue-300 opacity-0 hover:opacity-50"
+                            onMouseDown={(e) => handleMouseDown('sku', e)}
+                          />
+                        </TableHead>
+                        <TableHead 
+                          className="whitespace-nowrap relative"
+                          style={{ width: columnWidths.description, minWidth: 60 }}
+                        >
+                          Description
+                          <div 
+                            className="absolute top-0 right-0 w-1 h-full cursor-col-resize bg-transparent hover:bg-blue-300 opacity-0 hover:opacity-50"
+                            onMouseDown={(e) => handleMouseDown('description', e)}
+                          />
+                        </TableHead>
+                        <TableHead 
+                          className="whitespace-nowrap relative"
+                          style={{ width: columnWidths.status, minWidth: 60 }}
+                        >
+                          Status
+                          <div 
+                            className="absolute top-0 right-0 w-1 h-full cursor-col-resize bg-transparent hover:bg-blue-300 opacity-0 hover:opacity-50"
+                            onMouseDown={(e) => handleMouseDown('status', e)}
+                          />
+                        </TableHead>
+                        <TableHead 
+                          className="whitespace-nowrap relative"
+                          style={{ width: columnWidths.unit, minWidth: 60 }}
+                        >
+                          U/M
+                          <div 
+                            className="absolute top-0 right-0 w-1 h-full cursor-col-resize bg-transparent hover:bg-blue-300 opacity-0 hover:opacity-50"
+                            onMouseDown={(e) => handleMouseDown('unit', e)}
+                          />
+                        </TableHead>
+                        <TableHead 
+                          className="whitespace-nowrap relative"
+                          style={{ width: columnWidths.type, minWidth: 60 }}
+                        >
+                          Type
+                          <div 
+                            className="absolute top-0 right-0 w-1 h-full cursor-col-resize bg-transparent hover:bg-blue-300 opacity-0 hover:opacity-50"
+                            onMouseDown={(e) => handleMouseDown('type', e)}
+                          />
+                        </TableHead>
+                        <TableHead 
+                          className="text-right whitespace-nowrap relative"
+                          style={{ width: columnWidths.onHand, minWidth: 60 }}
+                        >
+                          On hand
+                          <div 
+                            className="absolute top-0 right-0 w-1 h-full cursor-col-resize bg-transparent hover:bg-blue-300 opacity-0 hover:opacity-50"
+                            onMouseDown={(e) => handleMouseDown('onHand', e)}
+                          />
+                        </TableHead>
+                        <TableHead 
+                          className="text-right whitespace-nowrap relative"
+                          style={{ width: columnWidths.avgCost, minWidth: 60 }}
+                        >
+                          Avg. cost (FIFO)
+                          <div 
+                            className="absolute top-0 right-0 w-1 h-full cursor-col-resize bg-transparent hover:bg-blue-300 opacity-0 hover:opacity-50"
+                            onMouseDown={(e) => handleMouseDown('avgCost', e)}
+                          />
+                        </TableHead>
+                        <TableHead 
+                          className="text-right whitespace-nowrap relative"
+                          style={{ width: columnWidths.assetValue, minWidth: 60 }}
+                        >
+                          Asset value
+                          <div 
+                            className="absolute top-0 right-0 w-1 h-full cursor-col-resize bg-transparent hover:bg-blue-300 opacity-0 hover:opacity-50"
+                            onMouseDown={(e) => handleMouseDown('assetValue', e)}
+                          />
+                        </TableHead>
+                        <TableHead 
+                          className="text-right whitespace-nowrap"
+                          style={{ width: columnWidths.minimum, minWidth: 60 }}
+                        >
+                          Minimum
+                        </TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {CATEGORY_OPTIONS.map((cat) => {
-                        const items = grouped[cat];
-                        if (!items || items.length === 0) return (
-                          <TableRow key={cat} className="opacity-60">
-                            <TableCell className="font-medium">
-                              <div className="flex items-center gap-2">
-                                <ChevronDown className="h-4 w-4" />
-                                {cat}
-                              </div>
-                            </TableCell>
-                            <TableCell colSpan={9} className="text-sm text-slate-500">No SKUs</TableCell>
-                          </TableRow>
-                        );
-
-                        const open = expanded[cat];
+                      {sortedSkus.map((sku, index) => {
+                        const qty = sku.onHand ?? 0;
+                        const min = sku.min ?? 0;
+                        const ok = qty >= min;
+                        const avg = avgCostFor(sku.id);
+                        
                         return (
-                          <React.Fragment key={cat}>
-                            <TableRow className="bg-slate-50/50">
-                              <TableCell className="font-medium">
-                                <button
-                                  type="button"
-                                  className="inline-flex items-center gap-2 w-full min-w-0"
-                                  onClick={() => toggleCat(cat)}
-                                  aria-expanded={open}
-                                  title={cat}
-                                >
-                                  {open ? <ChevronUp className="h-4 w-4 shrink-0"/> : <ChevronDown className="h-4 w-4 shrink-0"/>}
-                                  <span className="flex-1 min-w-0 truncate">{cat}</span>
-                                  <Badge variant="secondary" className="ml-2 rounded-full whitespace-nowrap shrink-0">
-                                    {items.length} SKU{items.length > 1 ? 's' : ''}
-                                  </Badge>
-                                </button>
-                              </TableCell>
-                              <TableCell colSpan={9}></TableCell>
-                            </TableRow>
-                            {open && items.map((s, i) => {
-                              const qty = s.onHand ?? 0;
-                              const min = s.min ?? 0;
-                              const ok = qty >= min;
-                              const avg = avgCostFor(s.id);
-                              return (
-                                <TableRow key={`${cat}-${s.id}-${i}`}>
-                                  <TableCell className="pl-8"></TableCell>
-                                  <TableCell className="font-medium">{s.id}</TableCell>
-                                  <TableCell>{s.description ?? '-'}</TableCell>
-                                  <TableCell>{s.unit ?? '-'}</TableCell>
-                                  <TableCell>{s.type === 'RAW' ? 'Raw' : 'Sellable'}</TableCell>
-                                  <TableCell className="text-right tabular-nums">{fmtInt(qty)}</TableCell>
-                                  <TableCell className="text-right tabular-nums">{avg != null ? fmtMoney(avg) : '—'}</TableCell>
-                                  <TableCell className="text-right tabular-nums">{avg != null ? fmtMoney(qty * avg) : '—'}</TableCell>
-                                  <TableCell className="text-right tabular-nums">{fmtInt(min)}</TableCell>
-                                  <TableCell><TrafficLight ok={ok} /></TableCell>
-                                </TableRow>
-                              );
-                            })}
-                          </React.Fragment>
+                          <TableRow key={`${sku.id}-${index}`}>
+                            <TableCell className="font-medium" style={{ width: columnWidths.category, minWidth: 60 }}>
+                              {sku.categoryName}
+                            </TableCell>
+                            <TableCell className="font-medium" style={{ width: columnWidths.sku, minWidth: 60 }}>
+                              {sku.id}
+                            </TableCell>
+                            <TableCell style={{ width: columnWidths.description, minWidth: 60 }}>
+                              {sku.description ?? '-'}
+                            </TableCell>
+                            <TableCell style={{ width: columnWidths.status, minWidth: 60 }}>
+                              <TrafficLight ok={ok} />
+                            </TableCell>
+                            <TableCell style={{ width: columnWidths.unit, minWidth: 60 }}>
+                              {sku.unit ?? '-'}
+                            </TableCell>
+                            <TableCell style={{ width: columnWidths.type, minWidth: 60 }}>
+                              {sku.type === 'RAW' ? 'Raw' : 'Sellable'}
+                            </TableCell>
+                            <TableCell className="text-right tabular-nums" style={{ width: columnWidths.onHand, minWidth: 60 }}>
+                              {fmtInt(qty)}
+                            </TableCell>
+                            <TableCell className="text-right tabular-nums" style={{ width: columnWidths.avgCost, minWidth: 60 }}>
+                              {avg != null ? fmtMoney(avg) : '—'}
+                            </TableCell>
+                            <TableCell className="text-right tabular-nums" style={{ width: columnWidths.assetValue, minWidth: 60 }}>
+                              {avg != null ? fmtMoney(qty * avg) : '—'}
+                            </TableCell>
+                            <TableCell className="text-right tabular-nums" style={{ width: columnWidths.minimum, minWidth: 60 }}>
+                              {fmtInt(min)}
+                            </TableCell>
+                          </TableRow>
                         );
                       })}
                     </TableBody>

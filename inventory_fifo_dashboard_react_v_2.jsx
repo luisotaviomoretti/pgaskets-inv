@@ -422,6 +422,47 @@ export default function InventoryWireframes() {
     setWoOutputName(""); setWoProducedQty(0); setWoRawQty(0);
   }
 
+  // Column widths (resizable) for Dashboard inventory table
+  const [colWidths, setColWidths] = useState<Record<string, number>>({
+    category: 220,
+    sku: 120,
+    description: 300,
+    unit: 80,
+    type: 100,
+    onHand: 100,
+    avgCost: 140,
+    assetValue: 120,
+    minimum: 100,
+    status: 120,
+  });
+  const ResizableTH = ({ id, align = 'left', children }: { id: keyof typeof colWidths | string; align?: 'left'|'right'|'center'; children: React.ReactNode }) => {
+    const width = colWidths[String(id)] ?? 120;
+    const onMouseDown = (e: React.MouseEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const startX = e.clientX;
+      const startW = colWidths[String(id)] ?? 120;
+      const onMove = (ev: MouseEvent) => {
+        const delta = ev.clientX - startX;
+        const next = Math.max(70, Math.min(480, startW + delta));
+        setColWidths((w) => ({ ...w, [String(id)]: next }));
+      };
+      const onUp = () => {
+        window.removeEventListener('mousemove', onMove);
+        window.removeEventListener('mouseup', onUp);
+      };
+      window.addEventListener('mousemove', onMove);
+      window.addEventListener('mouseup', onUp);
+    };
+    return (
+      <TableHead style={{ width }} className={`${align === 'right' ? 'text-right' : align === 'center' ? 'text-center' : ''} relative select-none`}>
+        <div className="pr-2 truncate" style={{ width }} title={typeof children === 'string' ? children : undefined}>{children}</div>
+        <div role="separator" aria-orientation="vertical" onMouseDown={onMouseDown}
+             className="absolute right-0 top-0 h-full w-1 cursor-col-resize hover:bg-slate-300 active:bg-slate-400" />
+      </TableHead>
+    );
+  };
+
   return (
     <div className="min-h-screen w-full bg-white text-slate-900">
       {/* Topbar */}
@@ -550,16 +591,16 @@ export default function InventoryWireframes() {
               <Table>
                 <TableHeader>
                   <TableRow>
-                    <TableHead className="w-[220px]">Category</TableHead>
-                    <TableHead>SKU</TableHead>
-                    <TableHead>Description</TableHead>
-                    <TableHead>U/M</TableHead>
-                    <TableHead>Type</TableHead>
-                    <TableHead className="text-right">On hand</TableHead>
-                    <TableHead className="text-right">Avg. cost (FIFO)</TableHead>
-                    <TableHead className="text-right">Asset value</TableHead>
-                    <TableHead className="text-right">Minimum</TableHead>
-                    <TableHead>Status</TableHead>
+                    <ResizableTH id="category">Category</ResizableTH>
+                    <ResizableTH id="sku">SKU</ResizableTH>
+                    <ResizableTH id="description">Description</ResizableTH>
+                    <ResizableTH id="unit">U/M</ResizableTH>
+                    <ResizableTH id="type">Type</ResizableTH>
+                    <ResizableTH id="onHand" align="right">On hand</ResizableTH>
+                    <ResizableTH id="avgCost" align="right">Avg. cost (FIFO)</ResizableTH>
+                    <ResizableTH id="assetValue" align="right">Asset value</ResizableTH>
+                    <ResizableTH id="minimum" align="right">Minimum</ResizableTH>
+                    <ResizableTH id="status">Status</ResizableTH>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -588,16 +629,16 @@ export default function InventoryWireframes() {
                           const qty = s.onHand ?? 0; const min = s.min ?? 0; const ok = qty >= min; const avg = avgCostFor(s.id);
                           return (
                             <TableRow key={`${cat}-${s.id}-${i}`}>
-                              <TableCell></TableCell>
-                              <TableCell className="font-medium">{s.id}</TableCell>
-                              <TableCell>{s.description ?? '-'}</TableCell>
-                              <TableCell>{s.unit ?? '-'}</TableCell>
-                              <TableCell>{s.type === 'RAW' ? 'Raw' : 'Sellable'}</TableCell>
-                              <TableCell className="text-right">{qty}</TableCell>
-                              <TableCell className="text-right">{avg != null ? fmtMoney(avg) : '—'}</TableCell>
-                              <TableCell className="text-right">{avg != null ? fmtMoney(qty * (avg || 0)) : '—'}</TableCell>
-                              <TableCell className="text-right">{min}</TableCell>
-                              <TableCell><TrafficLight ok={ok} /></TableCell>
+                              <TableCell style={{ width: colWidths.category }}></TableCell>
+                              <TableCell className="font-medium" style={{ width: colWidths.sku }}>{s.id}</TableCell>
+                              <TableCell style={{ width: colWidths.description }}>{s.description ?? '-'}</TableCell>
+                              <TableCell style={{ width: colWidths.unit }}>{s.unit ?? '-'}</TableCell>
+                              <TableCell style={{ width: colWidths.type }}>{s.type === 'RAW' ? 'Raw' : 'Sellable'}</TableCell>
+                              <TableCell className="text-right" style={{ width: colWidths.onHand }}>{qty}</TableCell>
+                              <TableCell className="text-right" style={{ width: colWidths.avgCost }}>{avg != null ? fmtMoney(avg) : '—'}</TableCell>
+                              <TableCell className="text-right" style={{ width: colWidths.assetValue }}>{avg != null ? fmtMoney(qty * (avg || 0)) : '—'}</TableCell>
+                              <TableCell className="text-right" style={{ width: colWidths.minimum }}>{min}</TableCell>
+                              <TableCell style={{ width: colWidths.status }}><TrafficLight ok={ok} /></TableCell>
                             </TableRow>
                           );
                         })}
@@ -995,7 +1036,6 @@ function SKUManager({ items, onChange }: { items: SKU[]; onChange: (items: SKU[]
         <div className="text-sm text-slate-600">Centralized SKU master data</div>
         <Button size="sm" className="rounded-xl" onClick={() => setOpenForm(v => !v)}>{openForm ? 'Close' : 'Add SKU'}</Button>
       </div>
-
       {openForm && (
         <div className="rounded-2xl border border-dashed p-4 grid grid-cols-1 md:grid-cols-3 gap-3">
           {editingIndex !== null && <div className="md:col-span-3 text-xs text-slate-500">Editing SKU: <b>{items[editingIndex]?.id}</b></div>}
