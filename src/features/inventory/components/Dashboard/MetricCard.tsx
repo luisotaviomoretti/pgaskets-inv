@@ -42,52 +42,77 @@ export interface MetricCardProps {
  */
 function SparkLine({ data, height = 40, formatValue, labels }: { data: number[]; height?: number; formatValue?: (v: number) => string; labels?: string[] }) {
   const [hovered, setHovered] = useState<number | null>(null);
-  const max = Math.max(...data, 1);
-  const min = Math.min(...data, 0);
+  // Calcular min/max brutos
+  const rawMax = Math.max(...data, 1);
+  const rawMin = Math.min(...data, 0);
+
+  // Aplicar padding para evitar linha colada na base quando a série é constante ou de baixa variação
+  let max = rawMax;
+  let min = rawMin;
+  if (rawMax === rawMin) {
+    // Série constante: centralizar a linha e adicionar uma margem visual
+    const pad = (rawMax === 0 ? 1 : Math.abs(rawMax) * 0.05);
+    max = rawMax + pad;
+    min = rawMin - pad;
+  } else {
+    // Série com variação: adicionar 10% de padding
+    const pad = (rawMax - rawMin) * 0.1;
+    max = rawMax + pad;
+    min = rawMin - pad;
+  }
   const range = max - min || 1;
   const POINT_SIZE = 3, GAP = 12;
   
-  // Criar pontos da linha
-  const points = data.map((v, i) => {
-    const x = i * (16 + GAP) + 8; // centralizado no "slot" da barra
-    const y = height - ((v - min) / range) * height;
-    return { x, y, value: v };
-  });
-  
-  // Criar path SVG da linha
-  const pathData = points.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x} ${p.y}`).join(' ');
-  
   return (
     <div className="relative h-full" style={{ minHeight: height + (labels ? 16 : 0) }}>
-      {/* Linha SVG */}
+      {/* Container do gráfico */}
       <div className="relative" style={{ height: height }} onMouseLeave={() => setHovered(null)}>
-        <svg className="absolute inset-0 w-full h-full" viewBox={`0 0 ${(data.length - 1) * (16 + GAP) + 16} ${height}`}>
-          <path 
-            d={pathData} 
-            stroke="black" 
-            strokeWidth="2" 
+        {/* Layout flex só para determinar posições X, não para posicionar visualmente */}
+        <div className="flex gap-3 opacity-0 pointer-events-none">
+          {data.map((_, i) => <div key={i} className="w-4" />)}
+        </div>
+        
+        {/* SVG com linha completa posicionada absolutamente */}
+        <svg className="absolute inset-0 w-full h-full">
+          {/* Linha conectando todos os pontos */}
+          <polyline
             fill="none"
+            stroke="black"
+            strokeWidth="2"
             opacity={0.9}
+            points={data.map((v, i) => {
+              const x = 8 + i * (16 + 12); // Centro de cada slot (8px offset + i * (width + gap))
+              const y = ((v - min) / range) * height; // Normal Y calculation (inverted later by transform)
+              return `${x},${height - y}`;
+            }).join(' ')}
           />
+          
           {/* Pontos interativos */}
-          {points.map((point, i) => (
-            <circle
-              key={i}
-              cx={point.x}
-              cy={point.y}
-              r={POINT_SIZE}
-              fill="black"
-              opacity={hovered === null || hovered === i ? 1 : 0.3}
-              className="cursor-pointer transition-opacity"
-              onMouseEnter={() => setHovered(i)}
-              title={formatValue ? formatValue(point.value) : String(point.value)}
-            />
-          ))}
+          {data.map((v, i) => {
+            const x = 8 + i * (16 + 12);
+            const y = height - ((v - min) / range) * height;
+            return (
+              <circle
+                key={i}
+                cx={x}
+                cy={y}
+                r={POINT_SIZE}
+                fill="black"
+                opacity={hovered === null || hovered === i ? 1 : 0.3}
+                className="cursor-pointer transition-opacity"
+                onMouseEnter={() => setHovered(i)}
+                title={formatValue ? formatValue(v) : String(v)}
+              />
+            );
+          })}
         </svg>
         
         {/* Tooltip */}
         {hovered !== null && (
-          <div className="absolute -top-6 text-[10px] px-1.5 py-0.5 rounded bg-black text-white shadow pointer-events-none" style={{ left: points[hovered].x - 15 }}>
+          <div 
+            className="absolute -top-6 text-[10px] px-1.5 py-0.5 rounded bg-black text-white shadow pointer-events-none"
+            style={{ left: 8 + hovered * (16 + 12) - 15 }}
+          >
             <div>{formatValue ? formatValue(data[hovered]) : data[hovered]}</div>
             {hovered > 0 && (
               <div className="text-[9px] opacity-80">
@@ -260,4 +285,3 @@ function MetricCardBase({ title, primary, secondary, unitPrimary, unitSecondary,
  */
 export const MetricCard = memo(MetricCardBase);
 export default MetricCard;
-

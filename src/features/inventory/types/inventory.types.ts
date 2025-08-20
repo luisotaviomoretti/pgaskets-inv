@@ -421,6 +421,7 @@ export interface MovementLogEntry {
     MovementType.RECEIVE | MovementType.ISSUE | MovementType.WASTE | MovementType.PRODUCE
   >;
   skuOrName: string; // SKU code or product name
+  skuId: string; // SKU ID for calculations (added for adaptive granularity)
   qty: number; // negative for ISSUE/WASTE
   value: number; // absolute value in currency units
   ref: string; // reference (e.g., WO number)

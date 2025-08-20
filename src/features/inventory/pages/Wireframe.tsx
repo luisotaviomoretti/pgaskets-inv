@@ -961,6 +961,7 @@ export default function InventoryWireframe() {
          datetime: (m.date instanceof Date ? m.date : new Date(m.date)),
          type: m.type as MovementTypeEnum,
          skuOrName: m.skuDescription,
+         skuId: m.skuId, // Added for adaptive granularity calculations
          qty: m.quantity,
          value: m.totalCost,
          ref: m.reference || '',
