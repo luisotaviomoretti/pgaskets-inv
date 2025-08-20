@@ -63,6 +63,32 @@ import { telemetry } from '@/features/inventory/services/telemetry';
 // Types for Receiving
 type DamageScope = 'NONE' | 'PARTIAL' | 'FULL';
 
+// Multi-SKU receiving line
+type ReceivingLine = {
+  id: string;          // UUID for line management
+  skuId: string;       // Selected SKU
+  qty: number;         // Quantity to receive
+  unitCost: number;    // Unit cost for this SKU
+  notes: string;       // Item-specific notes
+};
+
+// Shared form fields
+type SharedReceivingFields = {
+  date: string;
+  vendor: string;
+  packingSlip: string;
+  isDamaged: boolean;
+  damageDescription: string;
+  globalNotes: string;
+};
+
+// Batch processing result
+type BatchResult = {
+  line: ReceivingLine;
+  success: boolean;
+  error?: string;
+};
+
 // Props interface
 interface ReceivingProps {
   vendors: Vendor[];
@@ -408,8 +434,86 @@ function SectionCard({ title, icon, children }: { title: string; icon?: React.Re
   );
 }
 
+// Icons for multi-SKU functionality
+function Plus({ className }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+    </svg>
+  );
+}
+
+function Trash({ className }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+    </svg>
+  );
+}
+
+// SKU select for multi-line (enhanced version)
+function MultiSKUSelect({ 
+  skus, 
+  value, 
+  onChange, 
+  error,
+  id,
+  usedSkus = [] 
+}: { 
+  skus: SKU[]; 
+  value: string; 
+  onChange: (value: string) => void;
+  error?: string;
+  id?: string;
+  usedSkus?: string[];
+}) {
+  return (
+    <Select value={value} onValueChange={onChange}>
+      <SelectTrigger 
+        id={id}
+        className={`h-10 w-full ${error ? 'border-red-500 focus:ring-red-500' : ''}`}
+        aria-invalid={!!error}
+      >
+        <SelectValue placeholder="Select SKU" />
+      </SelectTrigger>
+      <SelectContent>
+        {skus.map(sku => {
+          const isUsed = usedSkus.includes(sku.id);
+          return (
+            <SelectItem 
+              key={sku.id} 
+              value={sku.id}
+              disabled={isUsed}
+            >
+              <div className="flex items-center gap-2">
+                <span className={isUsed ? 'text-slate-400' : ''}>{sku.id} — {sku.description}</span>
+                {isUsed && <span className="text-xs text-orange-500">(Already used)</span>}
+              </div>
+            </SelectItem>
+          );
+        })}
+      </SelectContent>
+    </Select>
+  );
+}
+
 export default function Receiving({ vendors, skus, layersBySku, movements, onUpdateLayers, onUpdateSKU, onAddMovement }: ReceivingProps) {
-  // Form state
+  // Multi-SKU receiving lines
+  const [receivingLines, setReceivingLines] = useState<ReceivingLine[]>([
+    { id: '1', skuId: '', qty: 0, unitCost: 0, notes: '' }
+  ]);
+  
+  // Shared form fields
+  const [sharedFields, setSharedFields] = useState<SharedReceivingFields>({
+    date: new Date().toISOString().split('T')[0],
+    vendor: '',
+    packingSlip: '',
+    isDamaged: false,
+    damageDescription: '',
+    globalNotes: ''
+  });
+
+  // Legacy single-field state for compatibility (to be removed gradually)
   const [date, setDate] = useState(() => new Date().toISOString().split('T')[0]);
   const [vendorValue, setVendorValue] = useState('');
   const [receivingSku, setReceivingSku] = useState('');
@@ -435,6 +539,131 @@ export default function Receiving({ vendors, skus, layersBySku, movements, onUpd
       setNotices((prev) => prev.filter((n) => n.id !== id));
     }, 4000);
   };
+
+  // Multi-SKU line management functions
+  const addReceivingLine = useCallback(() => {
+    const newId = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    setReceivingLines(prev => [...prev, { id: newId, skuId: '', qty: 0, unitCost: 0, notes: '' }]);
+  }, []);
+
+  const removeReceivingLine = useCallback((id: string) => {
+    if (receivingLines.length > 1) {
+      setReceivingLines(prev => prev.filter(line => line.id !== id));
+    }
+  }, [receivingLines.length]);
+
+  const updateReceivingLine = useCallback((id: string, updates: Partial<ReceivingLine>) => {
+    setReceivingLines(prev => prev.map(line => line.id === id ? { ...line, ...updates } : line));
+  }, []);
+
+  const updateSharedField = useCallback(<K extends keyof SharedReceivingFields>(
+    field: K, 
+    value: SharedReceivingFields[K]
+  ) => {
+    setSharedFields(prev => ({ ...prev, [field]: value }));
+  }, []);
+
+  // Batch processing state
+  const [batchProcessing, setBatchProcessing] = useState(false);
+  const [batchResults, setBatchResults] = useState<BatchResult[]>([]);
+  const [showBatchResults, setShowBatchResults] = useState(false);
+
+  // Validate all receiving lines
+  const validateAllLines = useCallback((): Record<string, string> => {
+    const errors: Record<string, string> = {};
+    
+    // Validate shared fields
+    if (!sharedFields.vendor.trim()) errors.vendor = 'Vendor is required';
+    if (!sharedFields.date) errors.date = 'Date is required';
+    
+    // Validate receiving lines
+    receivingLines.forEach((line, index) => {
+      if (!line.skuId) errors[`line-${line.id}-sku`] = 'SKU is required';
+      if (line.qty <= 0) errors[`line-${line.id}-qty`] = 'Quantity must be greater than 0';
+      if (line.unitCost <= 0) errors[`line-${line.id}-cost`] = 'Unit cost must be greater than 0';
+    });
+    
+    // Check for duplicate SKUs
+    const skuCounts = receivingLines.reduce((acc, line) => {
+      if (line.skuId) {
+        acc[line.skuId] = (acc[line.skuId] || 0) + 1;
+      }
+      return acc;
+    }, {} as Record<string, number>);
+    
+    Object.entries(skuCounts).forEach(([skuId, count]) => {
+      if (count > 1) {
+        receivingLines.forEach(line => {
+          if (line.skuId === skuId) {
+            errors[`line-${line.id}-duplicate`] = 'Duplicate SKU detected';
+          }
+        });
+      }
+    });
+    
+    return errors;
+  }, [receivingLines, sharedFields]);
+
+  // Process all receiving lines in batch
+  const processAllReceivings = useCallback(async () => {
+    const errors = validateAllLines();
+    if (Object.keys(errors).length > 0) {
+      notify('Please fix validation errors before processing', 'error');
+      return;
+    }
+
+    setBatchProcessing(true);
+    setBatchResults([]);
+    const results: BatchResult[] = [];
+
+    try {
+      for (const line of receivingLines) {
+        try {
+          await processReceiving({
+            skuId: line.skuId,
+            quantity: line.qty,
+            unitCost: line.unitCost,
+            date: new Date(sharedFields.date),
+            vendorName: sharedFields.vendor,
+            packingSlipNo: sharedFields.packingSlip || undefined,
+            notes: `${sharedFields.globalNotes} ${line.notes}`.trim() || undefined
+          });
+          results.push({ line, success: true });
+          notify(`✓ ${line.skuId} received successfully`, 'success');
+        } catch (error: any) {
+          results.push({ 
+            line, 
+            success: false, 
+            error: error.message || 'Processing failed' 
+          });
+          notify(`✗ ${line.skuId} failed: ${error.message}`, 'error');
+        }
+      }
+
+      setBatchResults(results);
+      setShowBatchResults(true);
+
+      const successCount = results.filter(r => r.success).length;
+      const totalCount = results.length;
+      
+      if (successCount === totalCount) {
+        notify(`All ${totalCount} items processed successfully!`, 'success');
+        // Reset form on complete success
+        setReceivingLines([{ id: '1', skuId: '', qty: 0, unitCost: 0, notes: '' }]);
+        setSharedFields(prev => ({ ...prev, globalNotes: '', packingSlip: '' }));
+      } else {
+        notify(`${successCount}/${totalCount} items processed successfully`, 'info');
+      }
+
+      // Refresh inventory if callback provided
+      if (onUpdateLayers || onUpdateSKU) {
+        // Trigger refresh (implementation depends on parent component)
+      }
+      
+    } finally {
+      setBatchProcessing(false);
+    }
+  }, [receivingLines, sharedFields, validateAllLines, notify, onUpdateLayers, onUpdateSKU]);
 
   // Focus management and keyboard handling for the confirmation modal
   useEffect(() => {
