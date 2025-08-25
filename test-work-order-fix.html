@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Test Work Order Fix</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        .test-case { border: 1px solid #ddd; padding: 15px; margin: 10px 0; }
+        .pass { background-color: #d4edda; border-color: #28a745; }
+        .fail { background-color: #f8d7da; border-color: #dc3545; }
+        .result { margin: 10px 0; }
+        .expected { color: #28a745; font-weight: bold; }
+        .actual { color: #dc3545; font-weight: bold; }
+    </style>
+</head>
+<body>
+    <h1>🧪 Test Work Order Value Calculation Fix</h1>
+    
+    <div class="test-case">
+        <h3>📋 Test Scenario: Mixed Units (kg + meters)</h3>
+        <p><strong>Setup:</strong></p>
+        <ul>
+            <li>RAW Material 1: 5 kg × $10/kg = $50</li>
+            <li>RAW Material 2: 3 m × $20/m = $60</li>
+            <li>Total RAW Cost: $110</li>
+            <li>WASTE: 1 kg × $10/kg = $10</li>
+            <li>Output: 2 gaskets (manual quantity)</li>
+        </ul>
+        
+        <div class="expected">
+            <p><strong>✅ Expected Results:</strong></p>
+            <ul>
+                <li>PRODUCE total_value: $100 (RAW $110 - WASTE $10)</li>
+                <li>PRODUCE unit_cost: $50/gasket ($100 ÷ 2)</li>
+                <li>WASTE total_value: $10 (FIFO cost of waste)</li>
+                <li>Work Order total_cost: $100 (net produce cost)</li>
+            </ul>
+        </div>
+    </div>
+
+    <div class="test-case">
+        <h3>📋 Test Scenario: Compatible Units (all kg)</h3>
+        <p><strong>Setup:</strong></p>
+        <ul>
+            <li>RAW Material 1: 5 kg × $10/kg = $50</li>
+            <li>RAW Material 2: 3 kg × $15/kg = $45</li>
+            <li>Total RAW Cost: $95</li>
+            <li>WASTE: 1 kg × $10/kg = $10</li>
+            <li>Output: 7 kg (auto-calculated or manual)</li>
+        </ul>
+        
+        <div class="expected">
+            <p><strong>✅ Expected Results:</strong></p>
+            <ul>
+                <li>PRODUCE total_value: $85 (RAW $95 - WASTE $10)</li>
+                <li>PRODUCE unit_cost: $12.14/kg ($85 ÷ 7)</li>
+                <li>WASTE total_value: $10 (FIFO cost of waste)</li>
+                <li>Work Order total_cost: $85 (net produce cost)</li>
+            </ul>
+        </div>
+    </div>
+
+    <div class="test-case">
+        <h3>📋 Test Scenario: No Waste</h3>
+        <p><strong>Setup:</strong></p>
+        <ul>
+            <li>RAW Material: 10 kg × $8/kg = $80</li>
+            <li>Total RAW Cost: $80</li>
+            <li>WASTE: $0</li>
+            <li>Output: 3 products (manual quantity)</li>
+        </ul>
+        
+        <div class="expected">
+            <p><strong>✅ Expected Results:</strong></p>
+            <ul>
+                <li>PRODUCE total_value: $80 (RAW $80 - WASTE $0)</li>
+                <li>PRODUCE unit_cost: $26.67/product ($80 ÷ 3)</li>
+                <li>Work Order total_cost: $80 (net produce cost)</li>
+            </ul>
+        </div>
+    </div>
+
+    <div id="test-results"></div>
+
+    <script>
+        // Test will be run when Work Orders are executed in the application
+        // This page serves as documentation of expected behavior
+        
+        function showTestResult(testName, expected, actual, passed) {
+            const resultDiv = document.createElement('div');
+            resultDiv.className = `result ${passed ? 'pass' : 'fail'}`;
+            resultDiv.innerHTML = `
+                <h4>${passed ? '✅' : '❌'} ${testName}</h4>
+                <p><strong>Expected:</strong> <span class="expected">${expected}</span></p>
+                <p><strong>Actual:</strong> <span class="actual">${actual}</span></p>
+            `;
+            document.getElementById('test-results').appendChild(resultDiv);
+        }
+
+        // Example usage (to be called when testing with real data):
+        // showTestResult("PRODUCE Value", "$100", "$100", true);
+        // showTestResult("WASTE Value", "$10", "$10", true);
+        // showTestResult("Unit Cost", "$50/gasket", "$50/gasket", true);
+        
+        document.addEventListener('DOMContentLoaded', function() {
+            console.log('🧪 Work Order test page loaded');
+            console.log('📋 To test, execute Work Orders in the application and verify values match expected results');
+            console.log('🔍 Check movements table for correct PRODUCE and WASTE values');
+        });
+    </script>
+</body>
+</html>

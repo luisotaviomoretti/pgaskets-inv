@@ -6,6 +6,12 @@
 import { supabase, handleSupabaseError } from '@/lib/supabase';
 import type { Database } from '@/types/supabase';
 import { calculateFIFOPlan, type FIFOPlanResult } from './fifo.service';
+// Temporarily commented out to avoid import conflicts
+// import { 
+//   validateWorkOrder, 
+//   checkWorkOrderFeasibility
+// } from '@/features/inventory/utils/work-order-validation';
+// import type { WorkOrderValidationResult } from '@/features/inventory/utils/work-order-validation';
 
 type WorkOrderRow = Database['public']['Tables']['work_orders']['Row'];
 
@@ -43,6 +49,7 @@ export interface WorkOrderResult {
   outputUnitCost: number;
   rawPlans: MultiSKUFIFOPlan[];
   wastePlans: MultiSKUFIFOPlan[];
+  // validation?: WorkOrderValidationResult; // Temporarily disabled
 }
 
 /**
@@ -115,6 +122,19 @@ export async function calculateWorkOrderFIFOPlans(
  */
 export async function createWorkOrder(params: WorkOrderParams): Promise<WorkOrderResult> {
   try {
+    // Pre-validate feasibility (simplified for now)
+    // TODO: Re-enable full validation after debugging
+    // const feasibilityMaterials = [
+    //   ...params.rawMaterials.map(r => ({ skuId: r.skuId, quantity: r.quantity, type: 'ISSUE' as const })),
+    //   ...params.wasteLines.map(w => ({ skuId: w.skuId, quantity: w.quantity, type: 'WASTE' as const }))
+    // ];
+
+    // const feasibility = await checkWorkOrderFeasibility(feasibilityMaterials);
+    
+    // if (!feasibility.canCreate) {
+    //   throw new Error(`Insufficient inventory for SKUs: ${feasibility.insufficientSKUs.join(', ')}`);
+    // }
+
     // Prepare materials array for RPC
     const materials = params.rawMaterials.map(raw => ({
       sku_id: raw.skuId,
@@ -171,13 +191,38 @@ export async function createWorkOrder(params: WorkOrderParams): Promise<WorkOrde
     // Calculate plans for return data (for UI compatibility)
     const fifoPlans = await calculateWorkOrderFIFOPlans(params.rawMaterials, params.wasteLines);
 
+    // Post-creation validation to ensure integrity (temporarily disabled)
+    // TODO: Re-enable after debugging
+    // let validation: WorkOrderValidationResult | undefined;
+    // try {
+    //   validation = await validateWorkOrder(result.work_order_id);
+      
+    //   if (!validation.isValid) {
+    //     console.warn(`Work Order ${result.work_order_id} validation failed:`, validation.issues);
+    //     // Optionally auto-repair if validation fails
+    //     // await repairWorkOrder(result.work_order_id);
+    //   }
+    // } catch (validationError) {
+    //   console.error('Work order validation failed:', validationError);
+    // }
+
     return {
       workOrderId: result.work_order_id,
-      totalRawCost: result.total_cost || fifoPlans.totalRawCost,
-      totalWasteCost: fifoPlans.totalWasteCost,
-      outputUnitCost: (result.total_cost || fifoPlans.totalRawCost) / params.outputQuantity,
+      totalRawCost: result.total_raw_cost || fifoPlans.totalRawCost,
+      totalWasteCost: result.total_waste_cost || fifoPlans.totalWasteCost,
+      outputUnitCost: result.produce_unit_cost || ((result.net_produce_cost || fifoPlans.totalRawCost) / params.outputQuantity),
       rawPlans: fifoPlans.rawPlans,
       wastePlans: fifoPlans.wastePlans,
+      // validation, // Temporarily disabled
+      // Additional details for verification
+      netProduceCost: result.net_produce_cost,
+      details: {
+        rawCost: result.total_raw_cost,
+        wasteCost: result.total_waste_cost,
+        netCost: result.net_produce_cost,
+        unitCost: result.produce_unit_cost,
+        consumptions: result.material_consumptions
+      }
     };
 
   } catch (error) {

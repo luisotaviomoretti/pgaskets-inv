@@ -9,6 +9,10 @@ import type { MovementType, MovementWithDetails } from '@/features/inventory/typ
 import { toMovementId } from '@/features/inventory/types/inventory.types';
 import { calculateFIFOPlan, executeFIFOConsumption, createFIFOLayer } from './fifo.service';
 import { createOrGetVendorByName } from './vendor.service';
+import { 
+  canDeleteReceivingMovement,
+  type DeleteValidationResult 
+} from './movement-delete-validation.service';
 
 type MovementRow = Database['public']['Tables']['movements']['Row'];
 type MovementInsert = Database['public']['Tables']['movements']['Insert'];
@@ -77,46 +81,51 @@ export async function getMovements(filters?: {
   dateTo?: Date;
   limit?: number;
   offset?: number;
+  includeDeleted?: boolean;
 }): Promise<{ movements: MovementWithDetails[]; total: number }> {
-  let query = supabase
-    .from('movements')
-    .select(`
-      *,
-      skus!movements_sku_id_fkey (
-        id,
-        description,
-        unit,
-        type,
-        product_category
-      )
-    `, { count: 'exact' })
-    .order('datetime', { ascending: false });
+  try {
+    // Use the new stored procedure for consistent filtering
+    const { data, error } = await supabase.rpc('get_movements_filtered', {
+      p_sku_id: filters?.skuId || null,
+      p_type: filters?.type || null,
+      p_date_from: filters?.dateFrom?.toISOString() || null,
+      p_date_to: filters?.dateTo?.toISOString() || null,
+      p_include_deleted: filters?.includeDeleted || false,
+      p_limit: filters?.limit || 100,
+      p_offset: filters?.offset || 0
+    });
 
-  // Apply filters
-  if (filters?.skuId) {
-    query = query.eq('sku_id', filters.skuId);
-  }
-  if (filters?.type) {
-    query = query.eq('type', filters.type);
-  }
-  if (filters?.dateFrom) {
-    query = query.gte('datetime', filters.dateFrom.toISOString());
-  }
-  if (filters?.dateTo) {
-    query = query.lte('datetime', filters.dateTo.toISOString());
-  }
-  if (filters?.limit) {
-    query = query.limit(filters.limit);
-  }
-  if (filters?.offset) {
-    query = query.range(filters.offset, (filters.offset + (filters.limit || 50)) - 1);
-  }
+    if (error) throw error;
 
-  const { data, error, count } = await query;
-  if (error) throw error;
+    const movements = (data || []).map((row: any) => ({
+      id: toMovementId(row.id.toString()),
+      date: new Date(row.datetime),
+      type: row.type as MovementType,
+      skuId: row.sku_id || '',
+      skuDescription: row.sku_description || row.product_name || row.sku_id || '',
+      unit: row.sku_unit || 'unit',
+      quantity: row.quantity,
+      unitCost: row.unit_cost || 0,
+      totalCost: row.total_value || 0,
+      vendor: row.vendor_name,
+      reference: row.reference,
+      notes: row.notes || undefined,
+      deletedAt: row.deleted_at ? new Date(row.deleted_at) : undefined,
+      deletedBy: row.deleted_by || undefined,
+      deletionReason: row.deletion_reason || undefined,
+    }));
 
-  const movements = (data || []).map(mapMovementRowToUI);
-  return { movements, total: count || 0 };
+    // Get total count separately for pagination
+    const { count } = await supabase
+      .from('movements')
+      .select('*', { count: 'exact', head: true })
+      .is('deleted_at', filters?.includeDeleted ? undefined : null);
+
+    return { movements, total: count || 0 };
+  } catch (error) {
+    console.error('Error fetching movements:', error);
+    throw error;
+  }
 }
 
 /**
@@ -408,6 +417,188 @@ export async function getMovementById(id: number): Promise<MovementWithDetails |
 }
 
 /**
+ * Check if a movement can be safely reversed
+ */
+export async function canReverseMovement(movementId: number): Promise<{
+  canReverse: boolean;
+  reason: string;
+  currentStock?: number;
+  requiredQuantity?: number;
+  remainingAfterReversal?: number;
+}> {
+  const { data, error } = await supabase.rpc('can_reverse_movement', {
+    p_movement_id: movementId
+  });
+
+  if (error) throw error;
+
+  return {
+    canReverse: data.can_reverse,
+    reason: data.reason,
+    currentStock: data.current_stock,
+    requiredQuantity: data.movement_quantity,
+    remainingAfterReversal: data.remaining_after_reversal
+  };
+}
+
+/**
+ * Validate Work Order state
+ */
+export async function validateWorkOrderState(reference: string): Promise<{
+  reference: string;
+  isValid: boolean;
+  canDelete: boolean;
+  canRestore: boolean;
+  hasProduce: boolean;
+  hasIssue: boolean;
+  hasWaste: boolean;
+  activeCount: number;
+  deletedCount: number;
+  issues: Array<{ type: string; message: string }>;
+  movements: Array<any>;
+}> {
+  const { data, error } = await supabase.rpc('validate_work_order_state', {
+    p_reference: reference
+  });
+
+  if (error) throw error;
+
+  return {
+    reference: data.reference,
+    isValid: data.is_valid,
+    canDelete: data.can_delete,
+    canRestore: data.can_restore,
+    hasProduce: data.has_produce,
+    hasIssue: data.has_issue,
+    hasWaste: data.has_waste,
+    activeCount: data.active_count,
+    deletedCount: data.deleted_count,
+    issues: data.issues || [],
+    movements: data.movements || []
+  };
+}
+
+/**
+ * Delete Work Order atomically
+ */
+export async function deleteWorkOrderAtomic(
+  reference: string,
+  options?: {
+    reason?: string;
+    deletedBy?: string;
+  }
+): Promise<{
+  success: boolean;
+  reference: string;
+  deletedMovementsCount: number;
+  affectedSkus: string[];
+  deletedMovements: Array<any>;
+}> {
+  const { data, error } = await supabase.rpc('delete_work_order_atomic', {
+    p_reference: reference,
+    p_deletion_reason: options?.reason || null,
+    p_deleted_by: options?.deletedBy || 'system'
+  });
+
+  if (error) throw error;
+  if (!data?.success) throw new Error('Failed to delete Work Order atomically');
+
+  return {
+    success: data.success,
+    reference: data.reference,
+    deletedMovementsCount: data.deleted_movements_count,
+    affectedSkus: data.affected_skus || [],
+    deletedMovements: data.deleted_movements || []
+  };
+}
+
+/**
+ * Restore Work Order atomically
+ */
+export async function restoreWorkOrderAtomic(
+  reference: string,
+  restoredBy?: string
+): Promise<{
+  success: boolean;
+  reference: string;
+  restoredMovementsCount: number;
+  affectedSkus: string[];
+  restoredMovements: Array<any>;
+}> {
+  const { data, error } = await supabase.rpc('restore_work_order_atomic', {
+    p_reference: reference,
+    p_restored_by: restoredBy || 'system'
+  });
+
+  if (error) throw error;
+  if (!data?.success) throw new Error('Failed to restore Work Order atomically');
+
+  return {
+    success: data.success,
+    reference: data.reference,
+    restoredMovementsCount: data.restored_movements_count,
+    affectedSkus: data.affected_skus || [],
+    restoredMovements: data.restored_movements || []
+  };
+}
+
+/**
+ * Diagnose Work Order integrity
+ */
+export async function diagnoseWorkOrderIntegrity(reference: string): Promise<{
+  reference: string;
+  validation: any;
+  skuIntegrity: Array<{
+    skuId: string;
+    skuOnHand: number;
+    layerTotal: number;
+    isSynchronized: boolean;
+    difference: number;
+  }>;
+  overallIntegrity: boolean;
+}> {
+  const { data, error } = await supabase.rpc('diagnose_work_order_integrity', {
+    p_reference: reference
+  });
+
+  if (error) throw error;
+
+  return {
+    reference: data.reference,
+    validation: data.validation,
+    skuIntegrity: data.sku_integrity || [],
+    overallIntegrity: data.overall_integrity
+  };
+}
+
+/**
+ * Repair SKU integrity
+ */
+export async function repairSkuIntegrity(skuId: string): Promise<{
+  skuId: string;
+  oldOnHand: number;
+  layerTotal: number;
+  newOnHand: number;
+  wasRepaired: boolean;
+  isNowSynchronized: boolean;
+}> {
+  const { data, error } = await supabase.rpc('repair_sku_integrity', {
+    p_sku_id: skuId
+  });
+
+  if (error) throw error;
+
+  return {
+    skuId: data.sku_id,
+    oldOnHand: data.old_on_hand,
+    layerTotal: data.layer_total,
+    newOnHand: data.new_on_hand,
+    wasRepaired: data.was_repaired,
+    isNowSynchronized: data.is_now_synchronized
+  };
+}
+
+/**
  * Get movement deletion information (for confirmation dialogs)
  */
 export async function getMovementDeletionInfo(movementId: number): Promise<{
@@ -489,7 +680,100 @@ export async function reverseMovement(
 }
 
 /**
- * Delete a movement completely (reverse + delete record)
+ * Soft delete a movement (with FIFO validation for RECEIVE movements)
+ */
+export async function softDeleteMovement(
+  movementId: number,
+  options?: {
+    reason?: string;
+    deletedBy?: string;
+    bypassValidation?: boolean; // For admin overrides
+  }
+): Promise<{
+  success: boolean;
+  movementId: number;
+  movementType: MovementType;
+  deletedAt: string;
+  deletedBy: string;
+  deletionReason?: string;
+  validationResult?: DeleteValidationResult;
+}> {
+  try {
+    // Validate RECEIVE movements unless bypassed
+    let validationResult: DeleteValidationResult | undefined;
+    
+    if (!options?.bypassValidation) {
+      validationResult = await canDeleteReceivingMovement(movementId);
+      
+      if (!validationResult.canDelete) {
+        throw new Error(
+          `Cannot delete movement: ${validationResult.reason}\n` +
+          `This would cause data inconsistency. ` +
+          (validationResult.workOrdersAffected?.length 
+            ? `Affected Work Orders: ${validationResult.workOrdersAffected.join(', ')}`
+            : '')
+        );
+      }
+    }
+
+    // Proceed with deletion
+    const { data, error } = await supabase.rpc('soft_delete_movement', {
+      p_movement_id: movementId,
+      p_deletion_reason: options?.reason || null,
+      p_deleted_by: options?.deletedBy || 'system'
+    });
+
+    if (error) throw error;
+    if (!data?.success) throw new Error('Failed to soft delete movement');
+
+    return {
+      success: data.success,
+      movementId: data.movement_id,
+      movementType: data.movement_type,
+      deletedAt: data.deleted_at,
+      deletedBy: data.deleted_by,
+      deletionReason: data.deletion_reason,
+      validationResult
+    };
+
+  } catch (error) {
+    console.error('Error in softDeleteMovement:', error);
+    throw error;
+  }
+}
+
+/**
+ * Restore a soft deleted movement
+ */
+export async function restoreMovement(
+  movementId: number,
+  restoredBy?: string
+): Promise<{
+  success: boolean;
+  movementId: number;
+  movementType: MovementType;
+  restoredAt: string;
+  restoredBy: string;
+}> {
+  const { data, error } = await supabase.rpc('restore_movement', {
+    p_movement_id: movementId,
+    p_restored_by: restoredBy || 'system'
+  });
+
+  if (error) throw error;
+  if (!data?.success) throw new Error('Failed to restore movement');
+
+  return {
+    success: data.success,
+    movementId: data.movement_id,
+    movementType: data.movement_type,
+    restoredAt: data.restored_at,
+    restoredBy: data.restored_by
+  };
+}
+
+/**
+ * Delete a movement (now uses soft delete by default)
  */
 export async function deleteMovement(
   movementId: number,
@@ -501,7 +785,7 @@ export async function deleteMovement(
   success: boolean;
   movementId: number;
   movementType: MovementType;
-  restoredLayers: Array<{
+  restoredLayers?: Array<{
     layerId: string;
     restoredQuantity?: number;
     remainingQuantity?: number;
@@ -509,8 +793,9 @@ export async function deleteMovement(
     newRemaining?: number;
   }>;
   deleted: boolean;
-  auditId: number;
-  deletionAuditId: number;
+  deletedAt?: string;
+  auditId?: number;
+  deletionAuditId?: number;
 }>{
   // First, determine type and reference
   const info = await getMovementDeletionInfo(movementId);
@@ -536,7 +821,7 @@ export async function deleteMovement(
     };
   }
 
-  // Otherwise, delete single movement using existing RPC
+  // Otherwise, delete single movement using soft delete RPC
   const { data, error } = await supabase.rpc('delete_movement', {
     p_movement_id: movementId,
     p_deletion_reason: options?.reason || null,

@@ -444,6 +444,10 @@ export interface MovementWithDetails {
   vendor?: string;
   reference?: string;
   notes?: string;
+  // Soft delete fields
+  deletedAt?: Date;
+  deletedBy?: string;
+  deletionReason?: string;
 }
 
 // Outcome model used by damaged receiving flow

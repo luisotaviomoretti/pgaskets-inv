@@ -19,7 +19,18 @@
       "Bash(npx wrangler:*)",
       "Bash(npm install:*)",
       "Bash(vercel login:*)",
-      "Bash(vercel:*)"
+      "Bash(vercel:*)",
+      "Bash(grep:*)",
+      "Bash(npx playwright:*)",
+      "Bash(mkdir:*)",
+      "Bash(rm:*)",
+      "Bash(npx supabase:*)",
+      "Bash(npx tsc:*)",
+      "Bash(psql:*)",
+      "Bash(mv:*)",
+      "Bash(/dev/null)",
+      "Bash(npm run typecheck:*)",
+      "Bash(npm run:*)"
     ],
     "deny": [],
     "ask": []

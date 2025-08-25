@@ -1,6 +1,8 @@
 import { useState, useMemo, useRef, useDeferredValue, useEffect } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import ConfirmDialog from '@/components/common/ConfirmDialog';
+import { supabase } from '@/lib/supabase';
+import { useWorkOrderEvents } from '@/features/inventory/utils/workOrderEvents';
 import type { MovementLogEntry, MovementId } from '@/features/inventory/types/inventory.types';
 import { MovementType } from '@/features/inventory/types/inventory.types';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -17,6 +19,11 @@ interface MovementsProps {
   movements?: MovementLogEntry[];
   onDeleteMovement?: (movementId: MovementId) => void;
   onExportExcel?: (filteredMovements: any[], activeFilters: any) => void;
+  onExportJournal?: (filteredMovements: any[], activeFilters: any) => void;
+  getExportedMovements?: () => Set<string>;
+  clearExportHistory?: () => Promise<void>;
+  syncToCloud?: () => Promise<void>;
+  onRefreshMovements?: () => void; // New prop for triggering movements refresh
 }
 
 // Movement type badge colors
@@ -36,6 +43,30 @@ function Trash({ className }: { className?: string }) {
     <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24">
       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
     </svg>
+  );
+}
+
+// Simple Delete Button that appears only when deletion is allowed
+function SimpleDeleteButton({ 
+  movementId, 
+  movementType, 
+  onDelete 
+}: { 
+  movementId: number; 
+  movementType: string; 
+  onDelete: () => void;
+}) {
+  return (
+    <Button
+      variant="outline"
+      size="sm"
+      onClick={onDelete}
+      className="h-8 w-8 p-0 text-red-600 hover:text-red-700 hover:bg-red-50"
+      aria-label="Delete movement"
+      title="Delete movement"
+    >
+      <Trash className="h-4 w-4" />
+    </Button>
   );
 }
 
@@ -61,7 +92,7 @@ function getRange(period: PeriodOption, customStart?: string, customEnd?: string
   return [new Date(now.getFullYear(), qStartMonth, 1).getTime(), now.getTime()] as const;
 }
 
-export default function Movements({ movements = [], onDeleteMovement, onExportExcel }: MovementsProps) {
+export default function Movements({ movements = [], onDeleteMovement, onExportExcel, onExportJournal, getExportedMovements, clearExportHistory, syncToCloud, onRefreshMovements }: MovementsProps) {
   const [skuFilter, setSkuFilter] = useState('');
   const [woFilter, setWoFilter] = useState('');
   const [typeFilter, setTypeFilter] = useState('');
@@ -71,9 +102,16 @@ export default function Movements({ movements = [], onDeleteMovement, onExportEx
   const [confirmDelete, setConfirmDelete] = useState<MovementId | null>(null);
   const [confirmationAnimal, setConfirmationAnimal] = useState<string | null>(null);
   // confirmation handled by ConfirmDialog
+  
 
   // Export confirmation state
   const [showExportConfirm, setShowExportConfirm] = useState(false);
+  const [showJournalExportConfirm, setShowJournalExportConfirm] = useState(false);
+  const [includeExportedMovements, setIncludeExportedMovements] = useState(false);
+  
+  // Sync state
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [isClearingHistory, setIsClearingHistory] = useState(false);
 
   // Pagination state
   const [page, setPage] = useState(1);
@@ -82,6 +120,9 @@ export default function Movements({ movements = [], onDeleteMovement, onExportEx
   // Debounced filters (lower-priority updates)
   const deferredSku = useDeferredValue(skuFilter);
   const deferredWo = useDeferredValue(woFilter);
+
+  // Event bus for real-time communication
+  const { onWorkOrderCompleted, onMovementsRefreshRequested } = useWorkOrderEvents();
 
   // i18n-ready formatters (use default locale; currency can be wired to env)
   const currencyFmt = useMemo(
@@ -120,6 +161,8 @@ export default function Movements({ movements = [], onDeleteMovement, onExportEx
     setConfirmationAnimal(token);
     setConfirmDelete(movementId);
   };
+  
+  
 
   // Helper to find movement by ID
   const findMovementById = (id: MovementId) => {
@@ -164,6 +207,44 @@ export default function Movements({ movements = [], onDeleteMovement, onExportEx
     setShowExportConfirm(false);
   };
 
+  // Handle journal export confirmation  
+  const handleJournalExportClick = () => {
+    setShowJournalExportConfirm(true);
+  };
+
+  const handleJournalExportConfirm = () => {
+    if (onExportJournal) {
+      onExportJournal(filteredMovements, activeFilters);
+    }
+    setShowJournalExportConfirm(false);
+  };
+
+  // Handle sync with loading state
+  const handleSyncClick = async () => {
+    if (!syncToCloud) return;
+    
+    setIsSyncing(true);
+    try {
+      await syncToCloud();
+    } finally {
+      setIsSyncing(false);
+    }
+  };
+
+  // Handle clear history with loading state
+  const handleClearHistoryClick = async () => {
+    if (!clearExportHistory) return;
+    
+    setIsClearingHistory(true);
+    try {
+      await clearExportHistory();
+    } catch (error) {
+      console.error('Failed to clear history:', error);
+    } finally {
+      setIsClearingHistory(false);
+    }
+  };
+
   // Calculate date range based on period selection
   const [rangeStart, rangeEnd] = useMemo(() => {
     return getRange(period, customStart, customEnd);
@@ -201,10 +282,112 @@ export default function Movements({ movements = [], onDeleteMovement, onExportEx
     return result;
   }, [movements, deferredSku, deferredWo, typeFilter, rangeStart, rangeEnd]);
 
+  // Filter movements applicable for journal (RECEIVE, PRODUCE, WASTE) with export tracking
+  const journalApplicableMovements = useMemo(() => {
+    const applicableMovements = filteredMovements.filter(([movement]) => 
+      [MovementType.RECEIVE, MovementType.PRODUCE, MovementType.WASTE].includes(movement.type)
+    );
+
+    if (includeExportedMovements || !getExportedMovements) {
+      return applicableMovements;
+    }
+
+    // Filter out already exported movements
+    const exportedMovements = getExportedMovements();
+    return applicableMovements.filter(([movement]) => 
+      !exportedMovements.has(movement.movementId)
+    );
+  }, [filteredMovements, includeExportedMovements, getExportedMovements]);
+
+  // Calculate movement counts for display
+  const movementCounts = useMemo(() => {
+    const allApplicable = filteredMovements.filter(([movement]) => 
+      [MovementType.RECEIVE, MovementType.PRODUCE, MovementType.WASTE].includes(movement.type)
+    );
+    
+    if (!getExportedMovements) {
+      return { newMovements: allApplicable.length, alreadyExported: 0 };
+    }
+
+    const exportedMovements = getExportedMovements();
+    const newMovements = allApplicable.filter(([movement]) => 
+      !exportedMovements.has(movement.movementId)
+    ).length;
+    const alreadyExported = allApplicable.length - newMovements;
+
+    return { newMovements, alreadyExported };
+  }, [filteredMovements, getExportedMovements]);
+
   // Reset to first page when filters change
   useEffect(() => {
     setPage(1);
   }, [deferredSku, deferredWo, typeFilter, period, customStart, customEnd]);
+
+  // 🚀 REAL-TIME SUBSCRIPTIONS: Listen to Supabase changes on movements table
+  useEffect(() => {
+    console.log('🔄 Setting up Supabase real-time subscription for movements');
+    
+    const subscription = supabase
+      .channel('movements_realtime')
+      .on('postgres_changes', {
+        event: 'INSERT',
+        schema: 'public',
+        table: 'movements'
+      }, (payload) => {
+        console.log('📝 New movement detected via Supabase:', payload);
+        // Trigger movements refresh immediately when new movement is inserted
+        if (onRefreshMovements) {
+          console.log('🔄 Triggering movements refresh from Supabase subscription');
+          onRefreshMovements();
+        }
+      })
+      .on('postgres_changes', {
+        event: 'UPDATE', 
+        schema: 'public',
+        table: 'movements'
+      }, (payload) => {
+        console.log('📝 Movement updated via Supabase:', payload);
+        // Also refresh on updates (e.g., soft deletes, corrections)
+        if (onRefreshMovements) {
+          console.log('🔄 Triggering movements refresh from Supabase update');
+          onRefreshMovements();
+        }
+      })
+      .subscribe((status) => {
+        console.log('📡 Movements subscription status:', status);
+      });
+
+    return () => {
+      console.log('🔌 Unsubscribing from movements real-time');
+      subscription.unsubscribe();
+    };
+  }, [onRefreshMovements]);
+
+  // 🎯 EVENT BUS: Listen to work order completion events
+  useEffect(() => {
+    const unsubscribeWorkOrder = onWorkOrderCompleted((event) => {
+      console.log('🎉 Work Order completed event received:', event.detail);
+      // Immediately refresh movements when work order completes
+      if (onRefreshMovements) {
+        console.log('🔄 Triggering movements refresh from work order completion');
+        onRefreshMovements();
+      }
+    });
+
+    const unsubscribeRefresh = onMovementsRefreshRequested((event) => {
+      console.log('🔄 Movements refresh requested by:', event.detail.source);
+      // Respond to explicit refresh requests
+      if (onRefreshMovements) {
+        console.log('🔄 Triggering movements refresh from explicit request');
+        onRefreshMovements();
+      }
+    });
+
+    return () => {
+      unsubscribeWorkOrder();
+      unsubscribeRefresh();
+    };
+  }, [onWorkOrderCompleted, onMovementsRefreshRequested, onRefreshMovements]);
 
   // Pagination derivations
   const totalRows = filteredMovements.length;
@@ -228,7 +411,9 @@ export default function Movements({ movements = [], onDeleteMovement, onExportEx
       <Card className="rounded-xl border border-dashed">
         <CardHeader className="py-4">
           <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
-            <CardTitle className="text-lg">Last Movements</CardTitle>
+            <CardTitle className="text-lg">
+              Last Movements <span className="text-sm font-normal text-green-600">🚀 Real-time</span>
+            </CardTitle>
             <div className="flex flex-col md:flex-row items-start md:items-center gap-2">
               {/* Period filter following Dashboard pattern */}
               <Select value={period} onValueChange={(v) => setPeriod(v as PeriodOption)}>
@@ -264,20 +449,73 @@ export default function Movements({ movements = [], onDeleteMovement, onExportEx
           </div>
         </CardHeader>
         <CardContent className="space-y-3">
-          {/* Export button with count */}
+          {/* Export buttons with count */}
           <div className="flex items-center justify-between">
             <div className="text-sm text-slate-600">
               Showing {filteredMovements.length} of {movements.length} movements
             </div>
-            <Button 
-              size="sm" 
-              variant="outline" 
-              onClick={handleExportClick}
-              disabled={filteredMovements.length === 0}
-              className="rounded-xl"
-            >
-              Export to Excel ({filteredMovements.length})
-            </Button>
+            <div className="flex gap-2">
+              <Button 
+                size="sm" 
+                variant="outline" 
+                onClick={handleExportClick}
+                disabled={filteredMovements.length === 0}
+                className="rounded-xl"
+              >
+                Export to Excel ({filteredMovements.length})
+              </Button>
+              <Button 
+                size="sm" 
+                variant="outline" 
+                onClick={handleJournalExportClick}
+                disabled={journalApplicableMovements.length === 0}
+                className="rounded-xl bg-blue-50 text-blue-700 border-blue-200 hover:bg-blue-100"
+              >
+                Export Journal ({movementCounts.newMovements > 0 && movementCounts.alreadyExported > 0 
+                  ? `${movementCounts.newMovements} new` 
+                  : journalApplicableMovements.length})
+              </Button>
+              {/* Clear export history button - only show if there's export history */}
+              {movementCounts.alreadyExported > 0 && clearExportHistory && (
+                <Button 
+                  size="sm" 
+                  variant="outline" 
+                  onClick={handleClearHistoryClick}
+                  disabled={isClearingHistory}
+                  className="rounded-xl text-gray-600 border-gray-300 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+                  title="Clear journal export history (creates Excel backup first)"
+                >
+                  {isClearingHistory ? (
+                    <>
+                      <span className="animate-spin inline-block w-3 h-3 border border-gray-500 border-t-transparent rounded-full mr-1"></span>
+                      Clearing...
+                    </>
+                  ) : (
+                    <>Clear History</>
+                  )}
+                </Button>
+              )}
+              {/* Sync to cloud button */}
+              {syncToCloud && (
+                <Button 
+                  size="sm" 
+                  variant="outline" 
+                  onClick={handleSyncClick}
+                  disabled={isSyncing}
+                  className="rounded-xl text-green-600 border-green-300 hover:bg-green-50 disabled:opacity-50 disabled:cursor-not-allowed"
+                  title="Sync journal history with cloud"
+                >
+                  {isSyncing ? (
+                    <>
+                      <span className="animate-spin inline-block w-3 h-3 border border-green-500 border-t-transparent rounded-full mr-1"></span>
+                      Syncing...
+                    </>
+                  ) : (
+                    <>☁️ Sync</>
+                  )}
+                </Button>
+              )}
+            </div>
           </div>
           
           {/* Additional filters below header */}
@@ -368,17 +606,12 @@ export default function Movements({ movements = [], onDeleteMovement, onExportEx
                             </TableCell>
                             <TableCell>{m.ref}</TableCell>
                             <TableCell>
-                              {(m.type === MovementType.PRODUCE || m.type === MovementType.RECEIVE) && onDeleteMovement && (
-                                <Button
-                                  variant="outline"
-                                  size="sm"
-                                  onClick={() => askConfirm(m.movementId)}
-                                  className="h-8 w-8 p-0 text-red-600 hover:text-red-700 hover:bg-red-50"
-                                  aria-label="Delete movement"
-                                  title="Delete movement"
-                                >
-                                  <Trash className="h-4 w-4" />
-                                </Button>
+                              {(m.type === MovementType.PRODUCE) && onDeleteMovement && (
+                                <SimpleDeleteButton
+                                  movementId={m.movementId}
+                                  movementType={m.type}
+                                  onDelete={() => askConfirm(m.movementId)}
+                                />
                               )}
                             </TableCell>
                           </TableRow>
@@ -467,6 +700,98 @@ export default function Movements({ movements = [], onDeleteMovement, onExportEx
                   Export {filteredMovements.length} Records
                 </Button>
               </div>
+            </Card>
+          </div>
+        </div>
+      )}
+
+      {/* Journal Export confirmation modal */}
+      {showJournalExportConfirm && (
+        <div className="fixed inset-0 z-50" role="dialog" aria-modal="true">
+          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setShowJournalExportConfirm(false)}></div>
+          <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[min(100%,600px)]">
+            <Card className="rounded-2xl shadow-2xl bg-white">
+              <CardHeader className="py-4">
+                <CardTitle className="text-lg flex items-center gap-2">
+                  <span className="text-blue-600">📊</span>
+                  Export Journal to Excel
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="space-y-3">
+                  <p className="text-sm text-slate-600">
+                    You're about to export <strong>{journalApplicableMovements.length} movements</strong> as journal entries to Excel. 
+                    This will create <strong>{journalApplicableMovements.length * 2} journal lines</strong> (2 per movement).
+                  </p>
+                  
+                  {/* Export Status Summary */}
+                  <div className="bg-slate-50 p-3 rounded-lg space-y-2">
+                    <div className="text-sm font-medium text-slate-700">Export Status:</div>
+                    <div className="grid grid-cols-2 gap-2 text-xs">
+                      <div className="text-green-600">
+                        <span className="font-medium">New entries:</span> {movementCounts.newMovements}
+                      </div>
+                      <div className="text-amber-600">
+                        <span className="font-medium">Already exported:</span> {movementCounts.alreadyExported}
+                      </div>
+                    </div>
+                    
+                    {/* Toggle for including already exported movements */}
+                    {movementCounts.alreadyExported > 0 && (
+                      <div className="mt-3 pt-2 border-t border-slate-200">
+                        <label className="flex items-center space-x-2 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={includeExportedMovements}
+                            onChange={(e) => setIncludeExportedMovements(e.target.checked)}
+                            className="rounded border-gray-300"
+                          />
+                          <span className="text-xs text-slate-600">Include already exported entries</span>
+                        </label>
+                      </div>
+                    )}
+                  </div>
+                </div>
+                
+                <div className="bg-blue-50 p-3 rounded-lg space-y-2">
+                  <div className="text-sm font-medium text-blue-700">Active Filters:</div>
+                  <div className="grid grid-cols-2 gap-2 text-xs">
+                    <div>
+                      <span className="font-medium">Period:</span> {formatPeriodDisplay()}
+                    </div>
+                    <div>
+                      <span className="font-medium">SKU/Name:</span> {activeFilters.sku || 'All'}
+                    </div>
+                    <div>
+                      <span className="font-medium">Work Order:</span> {activeFilters.workOrder || 'All'}
+                    </div>
+                    <div>
+                      <span className="font-medium">Movement Type:</span> {activeFilters.type || 'All'}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="bg-green-50 p-3 rounded-lg space-y-2">
+                  <div className="text-sm font-medium text-green-700">Journal Structure:</div>
+                  <div className="text-xs text-green-600 space-y-1">
+                    <div><strong>RECEIVE:</strong> Debit Inventory, Credit Accounts Payable</div>
+                    <div><strong>PRODUCE:</strong> Debit COGS, Credit Inventory</div>
+                    <div><strong>WASTE:</strong> Debit Shrinkage Expense, Credit Inventory</div>
+                  </div>
+                </div>
+                
+                <div className="flex items-center justify-end space-x-3 pt-2">
+                  <Button variant="outline" onClick={() => setShowJournalExportConfirm(false)}>
+                    Cancel
+                  </Button>
+                  <Button 
+                    onClick={handleJournalExportConfirm}
+                    className="bg-blue-600 hover:bg-blue-700 text-white"
+                  >
+                    Export Journal ({journalApplicableMovements.length * 2} lines)
+                  </Button>
+                </div>
+              </CardContent>
             </Card>
           </div>
         </div>

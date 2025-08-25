@@ -135,9 +135,6 @@ export const fifoOperations = {
  * Movement Operations
  */
 export const movementOperations = {
-  async getMovements(filters?: { skuId?: string; type?: string; dateFrom?: Date; dateTo?: Date; limit?: number; offset?: number }) {
-    return await MovementService.getMovements(filters as any);
-  },
 
   async createReceiveMovement(params: {
     skuId: string;
@@ -188,12 +185,57 @@ export const movementOperations = {
     return await MovementService.getMovementDeletionInfo(movementId);
   },
 
+  async canReverseMovement(movementId: number) {
+    return await MovementService.canReverseMovement(movementId);
+  },
+
   async reverseMovement(movementId: number, options?: { reason?: string; deletedBy?: string }) {
     return await MovementService.reverseMovement(movementId, options);
   },
 
   async deleteMovement(movementId: number, options?: { reason?: string; deletedBy?: string }) {
     return await MovementService.deleteMovement(movementId, options);
+  },
+
+  async softDeleteMovement(movementId: number, options?: { reason?: string; deletedBy?: string }) {
+    return await MovementService.softDeleteMovement(movementId, options);
+  },
+
+  async restoreMovement(movementId: number, restoredBy?: string) {
+    return await MovementService.restoreMovement(movementId, restoredBy);
+  },
+
+  async getMovements(filters?: { 
+    skuId?: string; 
+    type?: string; 
+    dateFrom?: Date; 
+    dateTo?: Date; 
+    limit?: number; 
+    offset?: number;
+    includeDeleted?: boolean;
+  }) {
+    return await MovementService.getMovements(filters as any);
+  },
+
+  // Work Order specific operations
+  async validateWorkOrderState(reference: string) {
+    return await MovementService.validateWorkOrderState(reference);
+  },
+
+  async deleteWorkOrderAtomic(reference: string, options?: { reason?: string; deletedBy?: string }) {
+    return await MovementService.deleteWorkOrderAtomic(reference, options);
+  },
+
+  async restoreWorkOrderAtomic(reference: string, restoredBy?: string) {
+    return await MovementService.restoreWorkOrderAtomic(reference, restoredBy);
+  },
+
+  async diagnoseWorkOrderIntegrity(reference: string) {
+    return await MovementService.diagnoseWorkOrderIntegrity(reference);
+  },
+
+  async repairSkuIntegrity(skuId: string) {
+    return await MovementService.repairSkuIntegrity(skuId);
   }
 };
 

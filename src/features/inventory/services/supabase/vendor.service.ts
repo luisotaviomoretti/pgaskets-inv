@@ -139,7 +139,7 @@ export async function getVendorByName(name: string): Promise<VendorRow | null> {
 }
 
 /**
- * Create new vendor
+ * Create new vendor with unique ID generation
  */
 export async function createVendor(vendor: {
   name: string;
@@ -153,8 +153,35 @@ export async function createVendor(vendor: {
   bankInfo?: Record<string, any>;
 }): Promise<VendorRow> {
   try {
-    // Generate vendor ID from name
-    const vendorId = `VND-${vendor.name.replace(/[^A-Z0-9]/gi, '').toUpperCase().slice(0, 10)}`;
+    // Generate base vendor ID from name
+    const namePrefix = vendor.name.replace(/[^A-Z0-9]/gi, '').toUpperCase().slice(0, 8);
+    const timestamp = Date.now().toString().slice(-4); // Last 4 digits of timestamp
+    let vendorId = `VND-${namePrefix}-${timestamp}`;
+    
+    // Ensure the ID is unique by checking if it exists
+    let attempt = 1;
+    let isUnique = false;
+    
+    while (!isUnique && attempt <= 5) {
+      const { data: existingVendor } = await supabase
+        .from('vendors')
+        .select('id')
+        .eq('id', vendorId)
+        .single();
+      
+      if (!existingVendor) {
+        isUnique = true;
+      } else {
+        // Generate new ID with incremented suffix
+        vendorId = `VND-${namePrefix}-${timestamp}-${attempt}`;
+        attempt++;
+      }
+    }
+    
+    if (!isUnique) {
+      // Fallback to random ID if all attempts failed
+      vendorId = `VND-${namePrefix}-${Math.random().toString(36).substr(2, 6).toUpperCase()}`;
+    }
 
     const insertData: VendorInsert = {
       id: vendorId,

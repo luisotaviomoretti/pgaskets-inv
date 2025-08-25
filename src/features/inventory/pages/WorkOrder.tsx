@@ -10,6 +10,7 @@ import { Layers } from '@/components/ui/icons';
 // Zod schema for runtime validation
 import { workOrderPayloadSchema } from '@/features/inventory/types/schemas';
 import { processWorkOrder, getFIFOLayers } from '@/features/inventory/services/inventory.adapter';
+import { useWorkOrderEvents } from '@/features/inventory/utils/workOrderEvents';
 
 // Types for Work Order
 type SKU = { id: string; description?: string; type: 'RAW' | 'SELLABLE'; productCategory: string; unit?: string; onHand?: number };
@@ -30,7 +31,6 @@ type WasteLine = {
   maxWaste: number;
 };
 
-type OutputMode = 'AUTO' | 'MANUAL';
 
 type MultiSKUPlan = {
   skuId: string;
@@ -136,12 +136,28 @@ function SectionCard({ title, icon, children }: { title: string; icon?: React.Re
 }
 
 export default function WorkOrder({ skus, layersBySku, onUpdateLayers, onUpdateSKU, onAddMovement, woId, onRefreshInventory }: WorkOrderProps) {
+  
+  // Event bus for real-time communication
+  const { emitWorkOrderCompleted, emitMovementsRefreshRequested } = useWorkOrderEvents();
+  
+  // Helper function: Get available stock with fallback to SKU.onHand for instant validation
+  const getAvailableStock = useCallback((skuId: string): number => {
+    const layers = layersBySku[skuId];
+    if (layers && layers.length > 0) {
+      // Use precise FIFO layers if available
+      return layers.reduce((sum, layer) => sum + (layer.remaining || 0), 0);
+    }
+    
+    // Fallback to SKU.onHand for instant validation when layers not loaded
+    const sku = skus.find(s => s.id === skuId);
+    return sku?.onHand || 0;
+  }, [layersBySku, skus]);
+
   // Multi-SKU state management
   const [rawMaterials, setRawMaterials] = useState<RawMaterialLine[]>([
     { id: '1', skuId: '', qty: 0, notes: '' }
   ]);
   const [wasteLines, setWasteLines] = useState<WasteLine[]>([]);
-  const [outputMode, setOutputMode] = useState<OutputMode>('AUTO');
   const [woOutputName, setWoOutputName] = useState('');
   const [woProducedQty, setWoProducedQty] = useState<number>(0);
   const [woClient, setWoClient] = useState('');
@@ -167,12 +183,51 @@ export default function WorkOrder({ skus, layersBySku, onUpdateLayers, onUpdateS
     defaultWOIdRef.current = `WO-${getNowYMDHM()}-${shortRand}`;
   }
 
+  // Strategy 1: Preload layers automatically when new SKUs are selected
+  useEffect(() => {
+    const activeSkuIds = rawMaterials
+      .filter(r => r.skuId && !layersBySku[r.skuId]) // Only load if not already loaded
+      .map(r => r.skuId);
+    
+    if (activeSkuIds.length === 0) return;
+    
+    // Preload layers for all newly selected SKUs
+    const preloadLayers = async () => {
+      const promises = activeSkuIds.map(async (skuId) => {
+        try {
+          console.log(`🔄 Preloading layers for SKU: ${skuId}`);
+          const layers = await getFIFOLayers(skuId);
+          const mapped = (layers || []).map((l: any) => {
+            const d = l.date instanceof Date ? l.date : new Date(l.date);
+            const dateStr = isNaN(d.getTime()) ? String(l.date) : d.toISOString().split('T')[0];
+            return { id: l.id, date: dateStr, remaining: l.remaining, cost: l.cost };
+          });
+          
+          // Update layers for this SKU
+          if (onUpdateLayers) {
+            onUpdateLayers(skuId, mapped);
+          }
+          console.log(`✅ Preloaded ${mapped.length} layers for SKU: ${skuId}`);
+        } catch (error) {
+          console.error(`❌ Failed to preload layers for SKU: ${skuId}`, error);
+          // Don't throw - continue with fallback validation using SKU.onHand
+        }
+      });
+      
+      await Promise.all(promises);
+    };
+    
+    // Debounce preloading to avoid too many concurrent requests
+    const timeoutId = setTimeout(preloadLayers, 500);
+    return () => clearTimeout(timeoutId);
+  }, [rawMaterials.map(r => r.skuId).join(','), layersBySku, onUpdateLayers]);
+
   // Focus the first invalid field (UX/A11y)
   const focusFirstError = useCallback(() => {
-    // Priority order: output name, produced qty (when MANUAL), then each RAW line (sku then qty)
+    // Priority order: output name, produced qty, then each RAW line (sku then qty)
     const order: string[] = [];
     if (errors.outputName) order.push('outputName');
-    if (outputMode === 'MANUAL' && errors.producedQty) order.push('producedQty');
+    if (errors.producedQty) order.push('producedQty');
     rawMaterials.forEach(r => {
       if (errors[`raw-sku-${r.id}`]) order.push(`raw-sku-${r.id}`);
       if (errors[`raw-qty-${r.id}`]) order.push(`raw-qty-${r.id}`);
@@ -186,7 +241,7 @@ export default function WorkOrder({ skus, layersBySku, onUpdateLayers, onUpdateS
         break;
       }
     }
-  }, [errors, rawMaterials, outputMode]);
+  }, [errors, rawMaterials]);
 
   // Add new raw material line
   const addRawMaterialLine = useCallback(() => {
@@ -254,22 +309,9 @@ export default function WorkOrder({ skus, layersBySku, onUpdateLayers, onUpdateS
     [wasteLines]
   );
   
-  const netOutputQty = useMemo(() => 
-    Math.max(0, totalRawQty - totalWasteQty), 
-    [totalRawQty, totalWasteQty]
-  );
 
-  // Check if units are compatible for auto mode
-  const canUseAutoMode = useMemo(() => {
-    const rawUnits = rawMaterials
-      .filter(r => r.skuId && r.qty > 0)
-      .map(r => skus.find(s => s.id === r.skuId)?.unit)
-      .filter(Boolean);
-    
-    return rawUnits.length === 0 || rawUnits.every(unit => unit === rawUnits[0]);
-  }, [rawMaterials, skus]);
 
-  // Mixed units exception case - force MANUAL mode with no validation
+  // Mixed units exception case - relaxes consumption=production+waste validation
   const hasMixedUnits = useMemo(() => {
     const rawUnits = rawMaterials
       .filter(r => r.skuId && r.qty > 0)
@@ -279,19 +321,7 @@ export default function WorkOrder({ skus, layersBySku, onUpdateLayers, onUpdateS
     return rawUnits.length > 1 && !rawUnits.every(unit => unit === rawUnits[0]);
   }, [rawMaterials, skus]);
 
-  // Auto-calculate output quantity when in AUTO mode
-  useEffect(() => {
-    if (outputMode === 'AUTO') {
-      setWoProducedQty(netOutputQty);
-    }
-  }, [outputMode, netOutputQty]);
 
-  // Force MANUAL mode when units are mixed
-  useEffect(() => {
-    if (hasMixedUnits && outputMode === 'AUTO') {
-      setOutputMode('MANUAL');
-    }
-  }, [hasMixedUnits, outputMode]);
 
   // Close modal on ESC
   useEffect(() => {
@@ -342,9 +372,9 @@ export default function WorkOrder({ skus, layersBySku, onUpdateLayers, onUpdateS
       const qtyId = `raw-qty-${r.id}`;
       if ((r.qty || 0) > 0 && !r.skuId) newErrors[skuId] = 'SKU is required for this line';
       if (r.skuId && (r.qty || 0) <= 0) newErrors[qtyId] = 'Quantity must be greater than 0';
-      // Insufficient stock per line (compare requested qty vs available in layers)
+      // Insufficient stock per line (with hybrid fallback for instant validation)
       if (r.skuId && (r.qty || 0) > 0) {
-        const available = (layersBySku[r.skuId] || []).reduce((s, l) => s + (l.remaining || 0), 0);
+        const available = getAvailableStock(r.skuId);
         if ((r.qty || 0) > available) {
           newErrors[qtyId] = 'Insufficient stock for this SKU. Receive more in Receiving.';
         }
@@ -357,7 +387,7 @@ export default function WorkOrder({ skus, layersBySku, onUpdateLayers, onUpdateS
       .filter(r => r.skuId && (r.qty || 0) > 0)
       .forEach(r => totalBySku.set(r.skuId, (totalBySku.get(r.skuId) || 0) + (r.qty || 0)));
     for (const [skuIdKey, total] of totalBySku.entries()) {
-      const available = (layersBySku[skuIdKey] || []).reduce((s, l) => s + (l.remaining || 0), 0);
+      const available = getAvailableStock(skuIdKey);
       if (total > available + 1e-9) {
         // Mark each line of this SKU with an aggregate error
         rawMaterials.forEach(r => {
@@ -370,11 +400,11 @@ export default function WorkOrder({ skus, layersBySku, onUpdateLayers, onUpdateS
 
     // Finished product name required
     if (!woOutputName.trim()) newErrors['outputName'] = 'Finished product name is required';
-    // Produced qty required in MANUAL (except for mixed units exception)
-    if (outputMode === 'MANUAL' && !hasMixedUnits && woProducedQty <= 0) newErrors['producedQty'] = 'Produced quantity must be greater than 0';
+    // Produced qty required (except for mixed units exception)
+    if (!hasMixedUnits && woProducedQty <= 0) newErrors['producedQty'] = 'Produced quantity must be greater than 0';
 
     setErrors(newErrors);
-  }, [rawMaterials, woOutputName, outputMode, woProducedQty, layersBySku]);
+  }, [rawMaterials, woOutputName, woProducedQty, layersBySku, hasMixedUnits, getAvailableStock]);
 
   // Multi-SKU FIFO plans
   const multiSkuPlans = useMemo((): MultiSKUPlan[] => {
@@ -395,7 +425,10 @@ export default function WorkOrder({ skus, layersBySku, onUpdateLayers, onUpdateS
         const totalCostCents = plan.reduce((sum, p) => sum + Math.round(p.cost * 100) * p.qty, 0);
         const totalCost = totalCostCents / 100;
         const totalQty = plan.reduce((sum, p) => sum + p.qty, 0);
-        const canFulfill = totalQty >= r.qty;
+        
+        // Use hybrid approach for canFulfill check
+        const availableStock = getAvailableStock(r.skuId);
+        const canFulfill = totalQty >= r.qty || availableStock >= r.qty;
         
         return {
           skuId: r.skuId,
@@ -435,26 +468,20 @@ export default function WorkOrder({ skus, layersBySku, onUpdateLayers, onUpdateS
   // NAV-80: Validation function to determine if WO can be finalized (multi-SKU)
   const canFinalizeWO = useMemo(() => {
     if (!woOutputName.trim()) return false;
-    if (outputMode === 'MANUAL' && !hasMixedUnits && woProducedQty <= 0) return false;
-    if (outputMode === 'AUTO' && !canUseAutoMode) return false;
+    if (!hasMixedUnits && woProducedQty <= 0) return false;
 
     const activeRaw = rawMaterials.filter(r => r.skuId && r.qty > 0);
     if (activeRaw.length === 0) return false;
 
-    // Skip consumption=production+waste validation for mixed units exception
-    if (!hasMixedUnits) {
-      // Invariant: total raw = produced + total waste
-      const totalConsumption = totalRawQty;
-      const totalOutput = (outputMode === 'AUTO' ? netOutputQty : woProducedQty) + totalWasteQty;
-      if (Math.abs(totalConsumption - totalOutput) > 0.01) return false;
-    }
+    // Note: Removed restrictive balance validation - industrial processes
+    // often don't have 1:1 raw material to finished product ratios
 
     // Sufficient inventory per SKU
     for (const p of multiSkuPlans) {
       if (!p.canFulfill) return false;
     }
     return true;
-  }, [woOutputName, outputMode, woProducedQty, canUseAutoMode, rawMaterials, totalRawQty, totalWasteQty, netOutputQty, multiSkuPlans, hasMixedUnits]);
+  }, [woOutputName, woProducedQty, rawMaterials, totalRawQty, totalWasteQty, multiSkuPlans, hasMixedUnits]);
 
   const finalizeWO = async () => {
     // Basic validations mirroring canFinalizeWO
@@ -462,12 +489,8 @@ export default function WorkOrder({ skus, layersBySku, onUpdateLayers, onUpdateS
       alert('Finished product name is required to finalize Work Order');
       return;
     }
-    if (outputMode === 'MANUAL' && !hasMixedUnits && woProducedQty <= 0) {
+    if (!hasMixedUnits && woProducedQty <= 0) {
       alert('Produced quantity must be greater than 0');
-      return;
-    }
-    if (outputMode === 'AUTO' && !canUseAutoMode) {
-      alert('Cannot use AUTO mode with incompatible units across RAW SKUs');
       return;
     }
 
@@ -477,21 +500,15 @@ export default function WorkOrder({ skus, layersBySku, onUpdateLayers, onUpdateS
       return;
     }
 
-    const producedQty = outputMode === 'AUTO' ? netOutputQty : woProducedQty;
-    // Skip consumption=production+waste validation for mixed units exception
-    if (!hasMixedUnits) {
-      const totalConsumption = totalRawQty;
-      const totalOutput = producedQty + totalWasteQty;
-      if (Math.abs(totalConsumption - totalOutput) > 0.01) {
-        alert(`Consumption (${totalConsumption}) must equal production + waste (${totalOutput})`);
-        return;
-      }
-    }
+    const producedQty = woProducedQty;
+    // Note: Removed restrictive balance validation - allows realistic industrial ratios
 
     // Ensure sufficient inventory per SKU
     for (const p of multiSkuPlans) {
       if (!p.canFulfill) {
-        alert(`Insufficient inventory for SKU ${p.skuId}. Required: ${activeRaw.filter(r => r.skuId === p.skuId).reduce((s, r) => s + r.qty, 0)}, Available: ${p.totalQty}`);
+        const required = activeRaw.filter(r => r.skuId === p.skuId).reduce((s, r) => s + r.qty, 0);
+        const available = getAvailableStock(p.skuId);
+        alert(`Insufficient inventory for SKU ${p.skuId}. Required: ${required}, Available: ${available}`);
         return;
       }
     }
@@ -519,7 +536,7 @@ export default function WorkOrder({ skus, layersBySku, onUpdateLayers, onUpdateS
         datetime: new Date().toISOString(),
         outputName: woOutputName.trim(),
         outputUnit,
-        mode: outputMode,
+        mode: 'MANUAL',
         outputQty: producedQty,
         raw,
         waste,
@@ -542,7 +559,47 @@ export default function WorkOrder({ skus, layersBySku, onUpdateLayers, onUpdateS
         notes: JSON.stringify({ client: woClient, invoice: woInvoice })
       });
 
-      alert(`Work Order ${result.workOrderId} finalized successfully!\n${producedQty} units of \"${woOutputName.trim()}\" produced.`);
+      // 🧪 Detailed logging for verification
+      console.log('🏭 Work Order Result Details:', {
+        workOrderId: result.workOrderId,
+        outputQuantity: producedQty,
+        outputName: woOutputName.trim(),
+        financials: {
+          totalRawCost: result.totalRawCost,
+          totalWasteCost: result.totalWasteCost,
+          netProduceCost: result.netProduceCost || (result.totalRawCost - result.totalWasteCost),
+          outputUnitCost: result.outputUnitCost
+        },
+        hasMixedUnits,
+        rawMaterials: rawMaterials.filter(r => r.skuId && r.qty > 0),
+        wasteLines: wasteLines.filter(w => w.wasteQty > 0),
+        result
+      });
+
+      // Enhanced success message with cost breakdown
+      const netCost = result.netProduceCost || (result.totalRawCost - result.totalWasteCost);
+      const costBreakdown = `
+📊 Cost Breakdown:
+• RAW Materials: $${result.totalRawCost?.toFixed(2) || '0.00'}
+• WASTE: $${result.totalWasteCost?.toFixed(2) || '0.00'}
+• NET PRODUCE: $${netCost?.toFixed(2) || '0.00'}
+• Unit Cost: $${result.outputUnitCost?.toFixed(2) || '0.00'}/${producedQty} units`;
+
+      alert(`✅ Work Order ${result.workOrderId} finalized successfully!
+${producedQty} units of "${woOutputName.trim()}" produced.
+
+${costBreakdown}`);
+
+      // 🚀 REAL-TIME EVENT: Emit work order completion for instant UI updates
+      emitWorkOrderCompleted({
+        workOrderId: result.workOrderId,
+        outputName: woOutputName.trim(),
+        outputQuantity: producedQty,
+        totalRawCost: result.totalRawCost || 0
+      });
+
+      // 🔄 REQUEST IMMEDIATE REFRESH: Trigger movements refresh without delay
+      emitMovementsRefreshRequested('WorkOrder.finalizeWO');
 
       // Refresh UI data after persistence
       // 1) Reload layers for each affected RAW SKU directly from backend (fifo_layers)
@@ -569,7 +626,6 @@ export default function WorkOrder({ skus, layersBySku, onUpdateLayers, onUpdateS
       // Reset form
       setRawMaterials([{ id: '1', skuId: '', qty: 0, notes: '' }]);
       setWasteLines([]);
-      setOutputMode('AUTO');
       setWoOutputName('');
       setWoProducedQty(0);
       setWoClient('');
@@ -741,35 +797,18 @@ export default function WorkOrder({ skus, layersBySku, onUpdateLayers, onUpdateS
                   )}
                 </div>
                 <div className="md:col-span-6 lg:col-span-3">
-                  <Label className="mb-1.5 block">Output mode</Label>
-                  <Select value={outputMode} onValueChange={(v) => setOutputMode(v as OutputMode)} disabled={hasMixedUnits}>
-                    <SelectTrigger className="h-10 w-full"><SelectValue placeholder="Mode" /></SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="AUTO">AUTO (Σ RAW - Σ Waste)</SelectItem>
-                      <SelectItem value="MANUAL">MANUAL</SelectItem>
-                    </SelectContent>
-                  </Select>
-                  {hasMixedUnits && (
-                    <div className="text-xs text-blue-600 mt-1">Mixed units detected - MANUAL mode required (any quantity allowed).</div>
-                  )}
-                  {outputMode === 'AUTO' && !canUseAutoMode && !hasMixedUnits && (
-                    <div className="text-xs text-amber-600 mt-1">Units across RAW SKUs differ; AUTO not allowed.</div>
-                  )}
-                </div>
-                <div className="md:col-span-6 lg:col-span-3">
-                  <Label className="mb-1.5 block">Produced quantity{outputMode === 'MANUAL' && !hasMixedUnits ? ' *' : ''}</Label>
+                  <Label className="mb-1.5 block">Produced quantity{!hasMixedUnits ? ' *' : ''}</Label>
                   <Input 
                     id="producedQty"
                     type="number" 
-                    value={outputMode === 'AUTO' ? netOutputQty : woProducedQty} 
+                    value={woProducedQty} 
                     onChange={(e) => setWoProducedQty(Math.max(0, parseFloat(e.target.value || '0')))} 
                     placeholder="0"
                     className={`h-10 w-full ${errors.producedQty ? 'border-red-500 focus:ring-red-500' : ''}`}
                     aria-invalid={!!errors.producedQty}
                     aria-describedby={errors.producedQty ? 'producedQty-error' : undefined}
-                    disabled={outputMode === 'AUTO'}
                   />
-                  {outputMode === 'MANUAL' && !hasMixedUnits && errors.producedQty && <ErrorMessage id="producedQty-error" message={errors.producedQty} />}
+                  {!hasMixedUnits && errors.producedQty && <ErrorMessage id="producedQty-error" message={errors.producedQty} />}
                   {hasMixedUnits && (
                     <div className="text-xs text-blue-600 mt-1">Mixed units: any quantity allowed.</div>
                   )}
@@ -812,9 +851,29 @@ export default function WorkOrder({ skus, layersBySku, onUpdateLayers, onUpdateS
                   type="button"
                   variant="outline"
                   className="rounded-xl"
-                  onClick={focusFirstError}
+                  onClick={() => {
+                    // Debug function to show what's preventing finalization
+                    const issues = [];
+                    if (!woOutputName.trim()) issues.push("❌ Finished product name is required");
+                    if (!hasMixedUnits && woProducedQty <= 0) issues.push("❌ Produced quantity must be > 0");
+                    
+                    const activeRaw = rawMaterials.filter(r => r.skuId && r.qty > 0);
+                    if (activeRaw.length === 0) issues.push("❌ Add at least one RAW material line with quantity > 0");
+                    
+                    // Note: Removed restrictive balance validation - allows realistic industrial ratios
+                    
+                    for (const p of multiSkuPlans) {
+                      if (!p.canFulfill) {
+                        const required = rawMaterials.filter(r => r.skuId === p.skuId).reduce((s, r) => s + r.qty, 0);
+                        const available = getAvailableStock(p.skuId);
+                        issues.push(`❌ Insufficient stock for ${p.skuId}: need ${required}, available ${available}`);
+                      }
+                    }
+                    
+                    alert("Cannot finalize Work Order:\n\n" + issues.join("\n"));
+                  }}
                 >
-                  Fix errors
+                  Debug issues
                 </Button>
               )}
               <Button variant="outline" className="rounded-xl">Save draft</Button>
@@ -873,11 +932,11 @@ export default function WorkOrder({ skus, layersBySku, onUpdateLayers, onUpdateS
         <SectionCard title="Validation notes" icon={<AlertTriangle className="h-5 w-5 text-amber-500"/>}>
           <ul className="text-sm list-disc pl-5 space-y-1 text-slate-600">
             <li>No negative balance in Raw or Sellable.</li>
-            <li>Total consumption = production + waste (WO consistency).</li>
             <li>Output name is free text and will appear in Movements once you finalize.</li>
             <li><b>Sufficient stock:</b> Raw material must have enough inventory to consume.</li>
             <li><b>Produced &gt; 0:</b> Production quantity must be greater than zero.</li>
             <li><b>Output name required:</b> Output name cannot be empty to finalize WO.</li>
+            <li><b>Realistic ratios:</b> Raw material consumption can exceed production (normal in manufacturing).</li>
           </ul>
         </SectionCard>
       </div>
@@ -980,7 +1039,7 @@ export default function WorkOrder({ skus, layersBySku, onUpdateLayers, onUpdateS
                 </div>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-sm text-slate-700">
                   <div><span className="text-slate-500">Output name:</span> <b>{woOutputName || '-'}</b></div>
-                  <div><span className="text-slate-500">Produced qty:</span> <b>{outputMode === 'AUTO' ? netOutputQty : woProducedQty}</b></div>
+                  <div><span className="text-slate-500">Produced qty:</span> <b>{woProducedQty}</b></div>
                   {woClient && (<div><span className="text-slate-500">Client:</span> <b>{woClient}</b></div>)}
                   {woInvoice && (<div><span className="text-slate-500">Invoice:</span> <b>{woInvoice}</b></div>)}
                 </div>

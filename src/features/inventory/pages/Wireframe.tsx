@@ -1,5 +1,5 @@
 import React, { lazy, Suspense } from 'react';
-import { useState, useMemo, useEffect, useCallback } from 'react';
+import { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -24,6 +24,7 @@ import {
   getFIFOLayers
 } from '@/features/inventory/services/inventory.adapter';
 import { MovementLogEntry, MovementType as MovementTypeEnum, toMovementId } from '@/features/inventory/types/inventory.types';
+import { journalSyncService } from '@/features/inventory/services/journalSyncService';
 
 // Types
 type Vendor = { id: string; name: string; address?: string; bank?: string; email?: string; phone?: string };
@@ -944,6 +945,72 @@ export default function InventoryWireframe() {
   const [movementLog, setMovementLog] = useState<MovementLogEntry[]>([]);
   const [isLoadingMovements, setIsLoadingMovements] = useState(false);
   
+  // Strategy 2: Smart refresh with debouncing (defined first to avoid circular deps)
+  const smartRefresh = useCallback(() => {
+    // Don't refresh if not on movements tab (save unnecessary requests)
+    if (tab !== 'movements') {
+      console.log('⚡ Skipping movements refresh - not on movements tab');
+      return;
+    }
+    
+    // Clear existing timeout to debounce multiple calls
+    if (refreshTimeout.current) {
+      clearTimeout(refreshTimeout.current);
+    }
+    
+    // Debounce multiple refresh calls within 2 seconds
+    refreshTimeout.current = setTimeout(() => {
+      console.log('🚀 Smart refresh: Loading movements');
+      // Direct call to avoid circular dependency
+      const loadMovementsNow = async () => {
+        try {
+          setIsLoadingMovements(true);
+          const [rangeStart, rangeEnd] = getRange(period, customStart, customEnd);
+          const { movements } = await getBackendMovements({
+            dateFrom: new Date(rangeStart),
+            dateTo: new Date(rangeEnd),
+            limit: 1000, // Reduced from 5000 for better performance
+          });
+          const mapped: MovementLogEntry[] = (movements || []).map((m: any) => ({
+            movementId: toMovementId(String(m.id)),
+            datetime: (m.date instanceof Date ? m.date : new Date(m.date)),
+            type: m.type as MovementTypeEnum,
+            skuOrName: m.skuId || m.productName || '',
+            skuId: m.skuId || '',
+            qty: m.quantity,
+            value: m.totalCost || 0,
+            ref: m.reference || '',
+          }));
+          setMovementLog(mapped);
+          console.log(`✅ Smart refresh completed: ${mapped.length} movements loaded`);
+        } catch (err: any) {
+          console.error('Smart refresh error:', err);
+          // Don't show error toast for background refreshes to avoid spam
+        } finally {
+          setIsLoadingMovements(false);
+        }
+      };
+      loadMovementsNow();
+    }, 2000);
+  }, [tab, period, customStart, customEnd]);
+
+  // Strategy 1: Incremental movement updates with delayed consolidation
+  const addMovementOptimistically = useCallback((movement: MovementLogEntry) => {
+    // Add immediately to the list for instant UI feedback
+    setMovementLog(currentLog => [movement, ...currentLog]);
+    
+    // Clear any existing consolidation timer
+    if (consolidationTimeout.current) {
+      clearTimeout(consolidationTimeout.current);
+    }
+    
+    // Schedule consolidation after 5 seconds of inactivity
+    consolidationTimeout.current = setTimeout(() => {
+      console.log('🔄 Consolidating movements after delayed period');
+      smartRefresh();
+    }, 5000);
+  }, [smartRefresh]);
+
   const loadMovements = useCallback(async () => {
     try {
       setIsLoadingMovements(true);
@@ -1029,6 +1096,22 @@ export default function InventoryWireframe() {
   // Sort mode state
   const [sortMode, setSortMode] = useState<'default' | 'redFlags' | 'quantity' | 'category'>('default');
 
+  // Performance optimization refs
+  const refreshTimeout = useRef<NodeJS.Timeout | null>(null);
+  const consolidationTimeout = useRef<NodeJS.Timeout | null>(null);
+
+  // Performance: Cleanup timeouts on unmount
+  useEffect(() => {
+    return () => {
+      if (refreshTimeout.current) {
+        clearTimeout(refreshTimeout.current);
+      }
+      if (consolidationTimeout.current) {
+        clearTimeout(consolidationTimeout.current);
+      }
+    };
+  }, []);
+
   // UX Polish: Modal ESC key handler and body scroll lock
   useEffect(() => {
     const handleEscape = (e: KeyboardEvent) => {
@@ -1051,28 +1134,35 @@ export default function InventoryWireframe() {
     };
   }, [vendorsOpen, skusOpen]);
 
-  // Initial load of movements, inventory summary, and vendors
+  // Initial load of movements, inventory summary, vendors, and sync
   useEffect(() => {
     loadMovements();
     loadInventorySummary();
     loadVendors();
+    
+    // Background sync from Supabase on app startup
+    journalSyncService.syncFromSupabase().catch(error => {
+      console.warn('Initial sync from Supabase failed:', error);
+    });
   }, [loadMovements, loadInventorySummary, loadVendors]);
 
-  // Refresh movements whenever Movements tab becomes active
+  // Smart refresh movements only when Movements tab becomes active (not every tab change)
   useEffect(() => {
     if (tab === 'movements') {
-      loadMovements();
+      // Use smart refresh instead of immediate loading for better performance
+      smartRefresh();
     }
     // Keep inventory snapshot fresh when returning to dashboard
     if (tab === 'dashboard') {
       loadInventorySummary();
     }
-  }, [tab, loadMovements, loadInventorySummary]);
+  }, [tab, smartRefresh, loadInventorySummary]);
 
-  // Refresh movements when the selected period changes (affects KPIs)
+  // Smart refresh movements when the selected period changes (affects KPIs)
   useEffect(() => {
-    loadMovements();
-  }, [period, customStart, customEnd, loadMovements]);
+    // Use smart refresh with debouncing for period changes
+    smartRefresh();
+  }, [period, customStart, customEnd, smartRefresh]);
 
   const avgCostFor = (skuId: string) => {
     const v = avgCostMap[skuId];
@@ -1321,6 +1411,217 @@ export default function InventoryWireframe() {
     // Download file
     XLSX.writeFile(wb, filename);
     toast.success(`Exported ${filteredMovements.length} movement record(s) to ${filename}`);
+  };
+
+  // Helper function to determine account type for journal entries
+  const getAccountType = (movement: any): 'RAW' | 'FINISHED' => {
+    const movementData = movement[0] || movement; // Handle tuple format [movement, index]
+    
+    // RECEIVE movements are always RAW materials
+    if (movementData.type === 'RECEIVE') {
+      return 'RAW';
+    }
+    
+    // If movement has Work Order reference, likely involves RAW materials
+    if (movementData.ref && movementData.ref.includes('WO-')) {
+      return 'RAW';
+    }
+    
+    // Heuristic: Check SKU/product name patterns for finished goods
+    const skuOrName = movementData.skuOrName || '';
+    const lowerName = skuOrName.toLowerCase();
+    
+    // Patterns that suggest finished goods
+    const finishedPatterns = [
+      'fg-', 'finished', 'final', 'complete', 'assembled',
+      'gasket', 'seal', 'product', 'part'
+    ];
+    
+    // Patterns that suggest raw materials  
+    const rawPatterns = [
+      'raw', 'material', 'steel', 'rubber', 'metal', 'sheet',
+      'compound', 'polymer', 'chemical', 'ingredient'
+    ];
+    
+    // Check for finished goods patterns first
+    if (finishedPatterns.some(pattern => lowerName.includes(pattern))) {
+      return 'FINISHED';
+    }
+    
+    // Check for raw materials patterns
+    if (rawPatterns.some(pattern => lowerName.includes(pattern))) {
+      return 'RAW';
+    }
+    
+    // Default: conservative approach - treat as RAW materials
+    return 'RAW';
+  };
+
+  // Journal Export History Management - Using sync service
+  const getExportedMovements = (): Set<string> => {
+    return journalSyncService.getExportedMovements();
+  };
+
+  const markMovementsAsExported = (movementIds: string[], journalNumber?: string): void => {
+    journalSyncService.markMovementsAsExported(movementIds, journalNumber);
+    
+    // Trigger background sync to Supabase
+    journalSyncService.syncToSupabase().catch(error => {
+      console.warn('Background sync to Supabase failed:', error);
+    });
+  };
+
+  const clearExportHistory = async (): Promise<void> => {
+    await journalSyncService.clearAllHistory();
+  };
+
+  // New function for full cloud sync
+  const syncToCloud = async (): Promise<void> => {
+    try {
+      const result = await journalSyncService.fullSync();
+      if (result.success) {
+        toast.success(`Sync completed: ${result.uploaded} uploaded, ${result.downloaded} downloaded`);
+      } else {
+        toast.error('Sync failed: ' + result.errors.join(', '));
+      }
+    } catch (error) {
+      console.error('Manual sync failed:', error);
+      toast.error('Sync failed: ' + (error instanceof Error ? error.message : 'Unknown error'));
+    }
+  };
+
+  // Export journal entries to Excel
+  const exportJournalToExcel = async (filteredMovements: any[], activeFilters: any) => {
+    // Filter only applicable movement types
+    const journalMovements = filteredMovements.filter(([movement]) => 
+      ['RECEIVE', 'PRODUCE', 'WASTE'].includes(movement.type)
+    );
+
+    if (journalMovements.length === 0) {
+      toast.info('No applicable movements for journal export (RECEIVE, PRODUCE, WASTE only)');
+      return;
+    }
+
+    // Generate unique journal number for this export
+    const timestamp = new Date();
+    const dateStr = timestamp.toISOString().split('T')[0].replace(/-/g, '');
+    const randomSuffix = Math.floor(Math.random() * 1000).toString().padStart(3, '0');
+    const journalNo = `J-${dateStr}-${randomSuffix}`;
+    const journalDate = timestamp.toLocaleDateString('en-US');
+
+    // Create journal entries (2 lines per movement)
+    const journalEntries: any[] = [];
+
+    journalMovements.forEach(([movement]) => {
+      const accountType = getAccountType(movement);
+      const value = Math.abs(movement.value || 0);
+      const inventoryAccount = accountType === 'RAW' ? 'Inventory - Raw Materials' : 'Inventory - Finished Goods';
+
+      switch (movement.type) {
+        case 'RECEIVE':
+          // Debit: Inventory, Credit: Accounts Payable
+          journalEntries.push({
+            'Journal No.': journalNo,
+            'Journal Date': journalDate,
+            'Account Name': inventoryAccount,
+            'Debits': value.toFixed(2),
+            'Credits': '',
+            'Reference': `${movement.ref} - ${movement.skuOrName}`,
+            'Movement ID': movement.movementId
+          });
+          journalEntries.push({
+            'Journal No.': journalNo,
+            'Journal Date': journalDate,
+            'Account Name': 'Accounts Payable',
+            'Debits': '',
+            'Credits': value.toFixed(2),
+            'Reference': `${movement.ref} - ${movement.skuOrName}`,
+            'Movement ID': movement.movementId
+          });
+          break;
+
+        case 'PRODUCE':
+          // Debit: COGS, Credit: Inventory
+          journalEntries.push({
+            'Journal No.': journalNo,
+            'Journal Date': journalDate,
+            'Account Name': 'Cost of Goods Sold (COGS)',
+            'Debits': value.toFixed(2),
+            'Credits': '',
+            'Reference': `${movement.ref} - ${movement.skuOrName}`,
+            'Movement ID': movement.movementId
+          });
+          journalEntries.push({
+            'Journal No.': journalNo,
+            'Journal Date': journalDate,
+            'Account Name': inventoryAccount,
+            'Debits': '',
+            'Credits': value.toFixed(2),
+            'Reference': `${movement.ref} - ${movement.skuOrName}`,
+            'Movement ID': movement.movementId
+          });
+          break;
+
+        case 'WASTE':
+          // Debit: Shrinkage Expense, Credit: Inventory
+          journalEntries.push({
+            'Journal No.': journalNo,
+            'Journal Date': journalDate,
+            'Account Name': 'Shrinkage Expense',
+            'Debits': value.toFixed(2),
+            'Credits': '',
+            'Reference': `${movement.ref} - ${movement.skuOrName}`,
+            'Movement ID': movement.movementId
+          });
+          journalEntries.push({
+            'Journal No.': journalNo,
+            'Journal Date': journalDate,
+            'Account Name': inventoryAccount,
+            'Debits': '',
+            'Credits': value.toFixed(2),
+            'Reference': `${movement.ref} - ${movement.skuOrName}`,
+            'Movement ID': movement.movementId
+          });
+          break;
+      }
+    });
+
+    // Create workbook and worksheet
+    const XLSX = await import('xlsx');
+    const wb = XLSX.utils.book_new();
+    const ws = XLSX.utils.json_to_sheet(journalEntries);
+
+    // Set column widths for better readability
+    const colWidths = [
+      { wch: 15 }, // Journal No.
+      { wch: 12 }, // Journal Date
+      { wch: 30 }, // Account Name
+      { wch: 15 }, // Debits
+      { wch: 15 }, // Credits
+      { wch: 40 }, // Reference
+      { wch: 12 }  // Movement ID
+    ];
+    ws['!cols'] = colWidths;
+
+    // Add worksheet to workbook
+    const sheetName = 'Journal Entries';
+    XLSX.utils.book_append_sheet(wb, ws, sheetName);
+
+    // Generate filename with timestamp and filter info
+    const fileTimestamp = new Date().toISOString().split('T')[0];
+    const filterSuffix = Object.values(activeFilters).some(f => f) ? '-filtered' : '';
+    const filename = `journal-entries${filterSuffix}-${fileTimestamp}.xlsx`;
+
+    // Download file
+    XLSX.writeFile(wb, filename);
+    
+    // Mark movements as exported with journal number
+    const exportedMovementIds = journalMovements.map(([movement]) => movement.movementId);
+    markMovementsAsExported(exportedMovementIds, journalNo);
+    
+    toast.success(`Exported ${journalEntries.length} journal entries (${journalMovements.length} movements) to ${filename}`, {
+      description: `Journal No: ${journalNo}`
+    });
   };
 
   // Flatten SKUs with category for each row
@@ -1820,8 +2121,8 @@ export default function InventoryWireframe() {
                   });
                 }}
                 onAddMovement={(movement) => {
-                  // Add movement to log
-                  setMovementLog(currentLog => [...currentLog, movement]);
+                  // Use optimized incremental update instead of direct state change
+                  addMovementOptimistically(movement);
                 }}
               />
             </Suspense>
@@ -1845,13 +2146,13 @@ export default function InventoryWireframe() {
                   });
                 }}
                 onAddMovement={(movement) => {
-                  // Add movement to log
-                  setMovementLog(currentLog => [...currentLog, movement]);
+                  // Use optimized incremental update instead of direct state change
+                  addMovementOptimistically(movement);
                 }}
                 onRefreshInventory={() => {
-                  // Ensure both inventory summary and movement list are up to date after WO
+                  // Use smart refresh instead of direct reload - better performance
                   loadInventorySummary();
-                  loadMovements();
+                  smartRefresh();
                 }}
               />
             </Suspense>
@@ -1863,7 +2164,13 @@ export default function InventoryWireframe() {
               <Button 
                 size="sm" 
                 variant="outline" 
-                onClick={loadMovements}
+                onClick={() => {
+                  // Manual refresh bypasses smart refresh debouncing for immediate response
+                  if (refreshTimeout.current) {
+                    clearTimeout(refreshTimeout.current);
+                  }
+                  loadMovements();
+                }}
                 disabled={isLoadingMovements}
               >
                 {isLoadingMovements ? 'Refreshing...' : 'Refresh'}
@@ -1872,6 +2179,11 @@ export default function InventoryWireframe() {
               <Movements 
               movements={movementLog} 
               onExportExcel={exportMovementsToExcel}
+              onExportJournal={exportJournalToExcel}
+              getExportedMovements={getExportedMovements}
+              clearExportHistory={clearExportHistory}
+              syncToCloud={syncToCloud}
+              onRefreshMovements={loadMovements}
               onDeleteMovement={async (movementId) => {
                 console.log('🚀 onDeleteMovement called with:', movementId);
                 console.log('🚀 deleteBackendMovement function:', typeof deleteBackendMovement);
@@ -1922,8 +2234,8 @@ export default function InventoryWireframe() {
                   
                   // Ensure Inventory Summary reflects updated on_hand and avg cost
                   await loadInventorySummary();
-                  // Keep Movements in sync (e.g., for other tabs or quick view)
-                  await loadMovements();
+                  // Keep Movements in sync using smart refresh instead of immediate reload
+                  smartRefresh();
                   
                   // Optionally refresh affected SKU's FIFO layers (if known)
                   if (affectedSkuId) {

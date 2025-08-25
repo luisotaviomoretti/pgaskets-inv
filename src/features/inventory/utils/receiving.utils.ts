@@ -112,3 +112,30 @@ export function buildPackingSlipSuggestion(params: {
   const seq = String(nextSeq).padStart(3, '0');
   return `${prefix}-${seq}`;
 }
+
+// Builds a batch packing slip reference for Multi-SKU receiving like: PS-VEN-BATCH-YYYYMMDD-001
+export function buildBatchPackingSlipSuggestion(params: {
+  vendorName: string;
+  date: string; // in YYYY-MM-DD
+  existingRefs?: string[]; // list of existing refs to compute next sequence
+}): string {
+  const { vendorName, date, existingRefs = [] } = params;
+  if (!vendorName || !date) return '';
+
+  const vendorCode = vendorName
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9\s-]/g, '')
+    .split(/\s+/)
+    .filter(Boolean)
+    .map(word => word[0])
+    .join('')
+    .slice(0, 3) || 'VEN';
+
+  const dateCode = date.replace(/-/g, '');
+  const prefix = `PS-${vendorCode}-BATCH-${dateCode}`;
+
+  const nextSeq = (existingRefs.filter(r => r?.startsWith(prefix)).length || 0) + 1;
+  const seq = String(nextSeq).padStart(3, '0');
+  return `${prefix}-${seq}`;
+}

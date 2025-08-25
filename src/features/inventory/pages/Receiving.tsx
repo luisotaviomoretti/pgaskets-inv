@@ -36,7 +36,7 @@ import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '@
 import { Badge } from '@/components/ui/badge';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Textarea } from '@/components/ui/textarea';
-import { Layers } from '@/components/ui/icons';
+import { Layers, Package, Plus, Minus } from '@/components/ui/icons';
 import {
   UISKUOption as SKU,
   LayerLite as Layer,
@@ -53,7 +53,8 @@ import {
   validateVendor, 
   validateSKU,
   getCharacterCount,
-  buildPackingSlipSuggestion
+  buildPackingSlipSuggestion,
+  buildBatchPackingSlipSuggestion
 } from '../utils/receiving.utils';
 
 // Zod schema for runtime validation
@@ -710,24 +711,11 @@ export default function Receiving({ vendors, skus, layersBySku, movements, onUpd
 
   const selectedSku = skus.find(s => s.id === receivingSku);
   
-  // Real-time validation
+  // Real-time validation for Multi-SKU form
   useEffect(() => {
-    const newErrors: Record<string, string> = {};
-    
-    const vendorError = validateVendor(vendorValue);
-    if (vendorError) newErrors.vendor = vendorError;
-    
-    const skuError = validateSKU(receivingSku);
-    if (skuError) newErrors.sku = skuError;
-    
-    const qtyError = validateQuantity(receivingQty);
-    if (qtyError) newErrors.quantity = qtyError;
-    
-    const costError = validateUnitCost(unitCost);
-    if (costError) newErrors.unitCost = costError;
-    
+    const newErrors = validateAllLines();
     setErrors(newErrors);
-  }, [vendorValue, receivingSku, receivingQty, unitCost]);
+  }, [validateAllLines]);
 
   // Clamp rejectedQty whenever qty changes (legacy compatibility)
   useEffect(() => {
@@ -738,24 +726,32 @@ export default function Receiving({ vendors, skus, layersBySku, movements, onUpd
     });
   }, [receivingQty]);
 
-  // Auto-suggest Packing Slip when user hasn't manually edited it
+  // Auto-suggest Multi-SKU Batch Packing Slip when user hasn't manually edited it
   useEffect(() => {
     if (packingSlipEdited) return;
-    // If user cleared the field, allow suggestions again
-    if (!packingSlip) {
-      // proceed
+    
+    // Only suggest if we have vendor and date
+    if (!sharedFields.vendor.trim() || !sharedFields.date) {
+      return;
     }
+    
+    // Check if we have at least one valid receiving line
+    const hasValidLines = receivingLines.some(line => line.skuId && line.qty > 0);
+    if (!hasValidLines) {
+      return;
+    }
+    
     const existingRefs = (movements || []).map(m => m.ref).filter(Boolean);
-    const suggestion = buildPackingSlipSuggestion({
-      vendorName: vendorValue,
-      skuId: receivingSku,
-      date,
+    const suggestion = buildBatchPackingSlipSuggestion({
+      vendorName: sharedFields.vendor,
+      date: sharedFields.date,
       existingRefs,
     });
-    if (suggestion && packingSlip !== suggestion) {
-      setPackingSlip(suggestion);
+    
+    if (suggestion && suggestion !== sharedFields.packingSlip) {
+      setSharedFields(prev => ({ ...prev, packingSlip: suggestion }));
     }
-  }, [vendorValue, receivingSku, date, movements, packingSlipEdited]);
+  }, [sharedFields.vendor, sharedFields.date, receivingLines, movements, packingSlipEdited]);
 
   // Character count for notes
   const notesCharCount = useMemo(() => getCharacterCount(notes), [notes]);
@@ -1107,216 +1103,270 @@ export default function Receiving({ vendors, skus, layersBySku, movements, onUpd
           ))}
         </div>
       )}
-      {/* Main Form Card */}
-      <Card className="max-w-3xl mx-auto">
+      {/* Multi-SKU Receiving Form */}
+      <Card className="max-w-7xl mx-auto">
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
             <Package className="h-5 w-5 text-slate-500" />
-            Receiving Form
+            Multi-SKU Receiving Form
           </CardTitle>
         </CardHeader>
-        <CardContent className="p-6">
-          <div className="grid grid-cols-12 gap-4 md:gap-6">
-            {/* Row 1: Date, Vendor */}
-            <div className="col-span-12 md:col-span-3 space-y-2">
-              <Label htmlFor="date" className="text-sm font-medium">Date</Label>
+        <CardContent className="p-6 space-y-6">
+          {/* Shared Fields */}
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-4 p-4 bg-slate-50 rounded-lg">
+            <div className="space-y-2">
+              <Label htmlFor="shared-date" className="text-sm font-medium">Date</Label>
               <Input 
-                id="date"
+                id="shared-date"
                 type="date" 
-                value={date}
-                onChange={(e) => setDate(e.target.value)}
+                value={sharedFields.date}
+                onChange={(e) => setSharedFields(prev => ({ ...prev, date: e.target.value }))}
                 className="h-10"
-                placeholder="mm/dd/yyyy"
               />
             </div>
-            <div className="col-span-12 md:col-span-9 space-y-2">
-              <Label htmlFor="vendor" className="text-sm font-medium">Vendor *</Label>
+            
+            <div className="space-y-2">
+              <Label htmlFor="shared-vendor" className="text-sm font-medium">Vendor *</Label>
               <VendorAutocomplete 
-                id="vendor"
-                value={vendorValue} 
-                onChange={setVendorValue} 
+                id="shared-vendor"
+                value={sharedFields.vendor} 
+                onChange={(value) => setSharedFields(prev => ({ ...prev, vendor: value }))}
                 suggestions={vendors}
                 error={errors.vendor}
               />
-              {errors.vendor && <ErrorMessage message={errors.vendor} id="vendor-error" />}
+              {errors.vendor && <ErrorMessage message={errors.vendor} id="shared-vendor-error" />}
             </div>
 
-            {/* Row 2: SKU, Type */}
-            <div className="col-span-12 md:col-span-6 space-y-2 mt-6">
-              <Label htmlFor="sku" className="text-sm font-medium">SKU *</Label>
-              <SKUSelect 
-                id="sku"
-                skus={skus} 
-                value={receivingSku} 
-                onChange={setReceivingSku} 
-                placeholder="Select SKU"
-                error={errors.sku}
-              />
-              {errors.sku && <ErrorMessage message={errors.sku} id="sku-error" />}
-            </div>
-            <div className="col-span-12 md:col-span-6 space-y-2 mt-6">
-              <Label htmlFor="type" className="text-sm font-medium">Type</Label>
-              <Input 
-                id="type"
-                value={selectedSku ? getTypeFromSKU(selectedSku.id, skus) : ''}
-                className="h-10 bg-slate-50"
-                placeholder="Automatically set from SKU" 
-                readOnly
-                aria-disabled="true"
-                title="Auto from SKU"
-              />
-              <p className="text-xs text-slate-500">Automatically set from SKU</p>
-            </div>
-
-            {/* Row 3: Quantity, Unit Cost (with 4 empty columns for spacing) */}
-            <div className="col-span-12 md:col-span-4 space-y-2 mt-6">
-              <Label htmlFor="quantity" className="text-sm font-medium">
-                Quantity{selectedSku?.unit ? ` (${selectedSku.unit})` : ''} *
-              </Label>
-              <Input 
-                id="quantity"
-                type="number" 
-                step="any"
-                min="0"
-                value={receivingQty || ''} 
-                onChange={(e) => {
-                  const n = Number.isNaN(parseFloat(e.target.value)) ? 0 : parseFloat(e.target.value);
-                  setReceivingQty(Math.max(0, n));
-                }} 
-                className={`h-10 ${errors.quantity ? 'border-red-500 focus:ring-red-500' : ''}`}
-                placeholder="0"
-                aria-invalid={!!errors.quantity}
-                aria-describedby={errors.quantity ? 'quantity-error' : undefined}
-              />
-              {errors.quantity && <ErrorMessage message={errors.quantity} id="quantity-error" />}
-            </div>
-            <div className="col-span-12 md:col-span-4 space-y-2 mt-6">
-              <Label htmlFor="unitCost" className="text-sm font-medium">Unit cost *</Label>
-              <CurrencyInput 
-                id="unitCost"
-                value={unitCost}
-                onChange={setUnitCost}
-                error={errors.unitCost}
-                placeholder="$0.00"
-              />
-              {errors.unitCost && <ErrorMessage message={errors.unitCost} id="unitCost-error" />}
-            </div>
-            <div className="col-span-12 md:col-span-4 mt-6"></div> {/* Empty space for layout */}
-
-            {/* Row 4: Packing slip, Damaged checkbox */}
-            <div className="col-span-12 md:col-span-8 space-y-2 mt-6">
-              <Label htmlFor="packingSlip" className="text-sm font-medium">Packing slip (No.)</Label>
-              <Input 
-                id="packingSlip"
-                value={packingSlip} 
-                onChange={(e) => { setPackingSlip(e.target.value); setPackingSlipEdited(!!e.target.value); }} 
-                className="h-10"
-                placeholder="PS-2025-0001"
-              />
-            </div>
-            <div className="col-span-12 md:col-span-4 flex items-end pb-2 mt-6">
-              <div className="flex items-center space-x-2">
-                <Checkbox 
-                  id="damaged" 
-                  checked={isDamaged} 
-                  onCheckedChange={(v) => { 
-                    const c = Boolean(v); 
-                    setIsDamaged(c); 
-                    setDamageScope(c ? 'FULL' : 'NONE'); 
-                    if (!c) {
-                      setRejectedQty(0);
-                      setDamageDescription('');
+            <div className="space-y-2">
+              <Label htmlFor="shared-packing-slip" className="text-sm font-medium">Packing Slip</Label>
+              <div className="flex items-center gap-2">
+                <Input 
+                  id="shared-packing-slip"
+                  value={sharedFields.packingSlip}
+                  onChange={(e) => {
+                    setSharedFields(prev => ({ ...prev, packingSlip: e.target.value }));
+                    setPackingSlipEdited(true);
+                  }}
+                  onFocus={() => {
+                    // If user focuses on empty field, allow auto-suggestions again
+                    if (!sharedFields.packingSlip) {
+                      setPackingSlipEdited(false);
                     }
                   }}
+                  className="h-10 flex-1"
+                  placeholder="Auto-generated or enter manually"
                 />
-                <Label htmlFor="damaged" className="text-sm font-medium cursor-pointer">Damaged?</Label>
+                {!packingSlipEdited && sharedFields.packingSlip && (
+                  <Badge variant="secondary" className="text-xs px-2 py-1">
+                    Auto
+                  </Badge>
+                )}
               </div>
             </div>
 
-            {/* Conditional Damage Description Field */}
-            {isDamaged && (
-              <div className="col-span-12 space-y-2 mt-6">
-                <Label htmlFor="damageDescription" className="text-sm font-medium">Damage description</Label>
-                <Textarea 
-                  id="damageDescription"
-                  value={damageDescription}
-                  onChange={(e) => setDamageDescription(e.target.value)}
-                  placeholder="Describe the damage..."
-                  className="min-h-[80px]"
+            <div className="space-y-2">
+              <Label className="text-sm font-medium">Damage Status</Label>
+              <div className="flex items-center space-x-2">
+                <input 
+                  id="shared-damaged"
+                  type="checkbox"
+                  checked={sharedFields.isDamaged}
+                  onChange={(e) => setSharedFields(prev => ({ ...prev, isDamaged: e.target.checked }))}
+                  className="rounded"
                 />
-              </div>
-            )}
-            {/* Legacy damage scope fields (hidden but functional for compatibility) */}
-            {isDamaged && (
-              <div className="col-span-12 grid grid-cols-1 md:grid-cols-3 gap-3 mt-6">
-                <div>
-                  <Label className="text-sm font-medium">Damage scope</Label>
-                  <Select value={damageScope} onValueChange={(v) => setDamageScope(v as DamageScope)}>
-                    <SelectTrigger className="h-10 w-full"><SelectValue placeholder="Select"/></SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="FULL">Entire packing slip</SelectItem>
-                      <SelectItem value="PARTIAL">Partial</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-                {damageScope === 'PARTIAL' && (<>
-                  <div>
-                    <Label className="text-sm font-medium">
-                      Rejected qty{selectedSku?.unit ? ` (${selectedSku.unit})` : ''}
-                    </Label>
-                    <Input 
-                      type="number" 
-                      step="any"
-                      min={0} 
-                      max={receivingQty} 
-                      value={rejectedQty} 
-                      onChange={(e) => { 
-                        const n = Number.isNaN(parseFloat(e.target.value)) ? 0 : parseFloat(e.target.value);
-                        setRejectedQty(Math.max(0, Math.min(n, receivingQty)));
-                      }} 
-                      className="h-10"
-                    />
-                  </div>
-                  <div>
-                    <Label className="text-sm font-medium">Accepted qty</Label>
-                    <Input value={Math.max(0, outcome.acceptQty)} readOnly className="h-10 bg-slate-50" />
-                  </div>
-                </>)}
-              </div>
-            )}
-            {isDamaged && (
-              <div className="col-span-12 mt-4">
-                <p className="text-xs text-amber-700 bg-amber-50 p-2 rounded">
-                  {damageScope === 'FULL' 
-                    ? 'The entire packing slip will be rejected (no inventory entry).' 
-                    : 'Partial damage: the rejected quantity will not enter inventory.'
-                  }
-                </p>
-              </div>
-            )}
-
-            {/* Row 5: Notes */}
-            <div className="col-span-12 space-y-2 mt-6">
-              <Label htmlFor="notes" className="text-sm font-medium">Notes</Label>
-              <Textarea 
-                id="notes"
-                value={notes} 
-                onChange={(e) => setNotes(e.target.value)} 
-                placeholder="Inspection notes"
-                className="min-h-[120px]"
-                maxLength={1000}
-              />
-              <div className="flex justify-between text-xs text-slate-500">
-                <span>Optional</span>
-                <span className={notesCharCount.isOverLimit ? 'text-red-500' : ''}>
-                  {notesCharCount.count}/1000 characters
-                </span>
+                <Label htmlFor="shared-damaged" className="text-sm">Items damaged</Label>
               </div>
             </div>
           </div>
+
+          {/* Damage Description - conditional on global damage flag */}
+          {sharedFields.isDamaged && (
+            <div className="space-y-2">
+              <Label htmlFor="shared-damage-desc" className="text-sm font-medium">Damage Description</Label>
+              <Textarea 
+                id="shared-damage-desc"
+                value={sharedFields.damageDescription}
+                onChange={(e) => setSharedFields(prev => ({ ...prev, damageDescription: e.target.value }))}
+                placeholder="Describe the damage affecting items in this receiving..."
+                className="min-h-[60px]"
+              />
+            </div>
+          )}
+
+          {/* Global Notes */}
+          <div className="space-y-2">
+            <Label htmlFor="shared-notes" className="text-sm font-medium">Notes (applied to all items)</Label>
+            <Textarea 
+              id="shared-notes"
+              value={sharedFields.globalNotes}
+              onChange={(e) => setSharedFields(prev => ({ ...prev, globalNotes: e.target.value }))}
+              placeholder="Optional notes for all items in this receiving batch..."
+              className="min-h-[60px]"
+            />
+          </div>
+
+          {/* Multi-SKU Table */}
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <Label className="text-sm font-medium">Receiving Items</Label>
+              <Button 
+                type="button" 
+                variant="outline" 
+                size="sm" 
+                onClick={addReceivingLine}
+                className="text-green-600 border-green-200 hover:bg-green-50"
+              >
+                <Plus className="h-4 w-4 mr-1" />
+                Add Item
+              </Button>
+            </div>
+
+            <div className="border rounded-lg overflow-hidden">
+              <Table>
+                <TableHeader>
+                  <TableRow className="bg-slate-50">
+                    <TableHead className="w-[200px]">SKU</TableHead>
+                    <TableHead className="w-[120px]">Quantity</TableHead>
+                    <TableHead className="w-[120px]">Unit Cost</TableHead>
+                    <TableHead className="w-[200px]">Notes</TableHead>
+                    <TableHead className="w-[100px]">Actions</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {receivingLines.map((line, index) => {
+                    const lineErrors = Object.keys(errors).filter(key => 
+                      key.startsWith(`line-${line.id}`)
+                    );
+                    
+                    return (
+                      <TableRow key={line.id} className={lineErrors.length > 0 ? "bg-red-50" : ""}>
+                        <TableCell>
+                          <div className="space-y-1">
+                            <SKUSelect 
+                              id={`sku-${line.id}`}
+                              skus={skus}
+                              value={line.skuId}
+                              onChange={(value) => updateReceivingLine(line.id, { skuId: value })}
+                              placeholder="Select SKU"
+                              error={errors[`line-${line.id}-sku`]}
+                            />
+                            {errors[`line-${line.id}-sku`] && (
+                              <ErrorMessage 
+                                message={errors[`line-${line.id}-sku`]} 
+                                id={`sku-${line.id}-error`} 
+                              />
+                            )}
+                          </div>
+                        </TableCell>
+                        
+                        <TableCell>
+                          <div className="space-y-1">
+                            <div className="flex items-center gap-2">
+                              <Input 
+                                id={`qty-${line.id}`}
+                                type="number"
+                                step="any"
+                                min="0"
+                                value={line.qty || ''}
+                                onChange={(e) => {
+                                  const n = Number.isNaN(parseFloat(e.target.value)) ? 0 : parseFloat(e.target.value);
+                                  updateReceivingLine(line.id, { qty: Math.max(0, n) });
+                                }}
+                                className={`h-9 ${errors[`line-${line.id}-qty`] ? 'border-red-500' : ''}`}
+                                placeholder="0"
+                              />
+                              <span className="text-xs text-slate-500 min-w-[40px]">
+                                {line.skuId ? skus.find(s => s.id === line.skuId)?.unit || '' : ''}
+                              </span>
+                            </div>
+                            {errors[`line-${line.id}-qty`] && (
+                              <ErrorMessage 
+                                message={errors[`line-${line.id}-qty`]} 
+                                id={`qty-${line.id}-error`} 
+                              />
+                            )}
+                          </div>
+                        </TableCell>
+                        
+                        <TableCell>
+                          <div className="space-y-1">
+                            <CurrencyInput 
+                              id={`cost-${line.id}`}
+                              value={line.unitCost}
+                              onChange={(value) => updateReceivingLine(line.id, { unitCost: value })}
+                              error={errors[`line-${line.id}-cost`]}
+                              placeholder="$0.00"
+                              className="h-9"
+                            />
+                            {errors[`line-${line.id}-cost`] && (
+                              <ErrorMessage 
+                                message={errors[`line-${line.id}-cost`]} 
+                                id={`cost-${line.id}-error`} 
+                              />
+                            )}
+                          </div>
+                        </TableCell>
+                        
+                        <TableCell>
+                          <Input 
+                            value={line.notes}
+                            onChange={(e) => updateReceivingLine(line.id, { notes: e.target.value })}
+                            placeholder="Item-specific notes"
+                            className="h-9"
+                          />
+                        </TableCell>
+                        
+                        <TableCell>
+                          <Button 
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            onClick={() => removeReceivingLine(line.id)}
+                            disabled={receivingLines.length <= 1}
+                            className="text-red-600 border-red-200 hover:bg-red-50"
+                          >
+                            <Minus className="h-4 w-4" />
+                          </Button>
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
+                </TableBody>
+              </Table>
+            </div>
+
+            {/* Processing Summary */}
+            <div className="bg-slate-50 p-3 rounded-lg text-sm">
+              <div className="flex justify-between items-center">
+                <span className="text-slate-600">Total Items: {receivingLines.filter(l => l.skuId && l.qty > 0).length}</span>
+                <span className="text-slate-600">
+                  Total Value: ${receivingLines.filter(l => l.skuId && l.qty > 0).reduce((sum, l) => sum + (l.qty * l.unitCost), 0).toFixed(2)}
+                </span>
+              </div>
+            </div>
+
+            {/* Action Buttons */}
+            <div className="flex items-center justify-between pt-4">
+              <div className="text-sm text-slate-500">
+                {batchProcessing && "Processing items..."}
+              </div>
+              <div className="flex gap-2">
+                <Button 
+                  type="button"
+                  variant="outline"
+                  onClick={() => setConfirmOpen(true)}
+                  disabled={batchProcessing || receivingLines.filter(l => l.skuId && l.qty > 0).length === 0}
+                  className="bg-blue-600 text-white hover:bg-blue-700"
+                >
+                  {batchProcessing ? "Processing..." : `Process ${receivingLines.filter(l => l.skuId && l.qty > 0).length} Items`}
+                </Button>
+              </div>
+            </div>
+          </div>
+
         </CardContent>
         
-        {/* Confirmation Modal (accessible via portal) */}
+        {/* Batch Confirmation Modal */}
         {confirmOpen && createPortal(
           <div className="fixed inset-0 z-50" role="presentation">
             <div
@@ -1325,32 +1375,62 @@ export default function Receiving({ vendors, skus, layersBySku, movements, onUpd
               onClick={() => setConfirmOpen(false)}
             />
             <div
-              className="absolute left-1/2 top-24 -translate-x-1/2 w-[min(100%,560px)]"
+              className="absolute left-1/2 top-24 -translate-x-1/2 w-[min(100%,640px)]"
               role="dialog"
               aria-modal="true"
-              aria-labelledby="confirm-receiving-title"
+              aria-labelledby="confirm-batch-title"
               ref={dialogRef}
             >
               <Card className="rounded-2xl shadow-2xl bg-white ring-1 ring-black/10">
                 <CardHeader>
-                  <CardTitle id="confirm-receiving-title">Confirm receiving</CardTitle>
+                  <CardTitle id="confirm-batch-title">Confirm Multi-SKU Receiving</CardTitle>
                 </CardHeader>
-                <CardContent className="space-y-3">
-                  <div className="text-sm">
-                    <div><span className="text-slate-700">Date:</span> {date}</div>
-                    <div><span className="text-slate-700">Vendor:</span> {vendorValue || '-'}</div>
-                    <div><span className="text-slate-700">Packing Slip:</span> {packingSlip || '-'}</div>
-                    <div><span className="text-slate-700">SKU:</span> {receivingSku || '-'}</div>
-                    <div><span className="text-slate-700">Accepted qty:</span> {Math.max(0, outcome.acceptQty)}</div>
-                    {isDamaged && outcome.wasteQty > 0 && (
-                      <div><span className="text-slate-700">Rejected qty:</span> {outcome.wasteQty}</div>
+                <CardContent className="space-y-4">
+                  <div className="text-sm space-y-2">
+                    <div><span className="text-slate-700">Date:</span> {sharedFields.date}</div>
+                    <div><span className="text-slate-700">Vendor:</span> {sharedFields.vendor || '-'}</div>
+                    <div><span className="text-slate-700">Packing Slip:</span> {sharedFields.packingSlip || '-'}</div>
+                    {sharedFields.isDamaged && (
+                      <div><span className="text-slate-700">Damage:</span> Yes - {sharedFields.damageDescription || 'No description'}</div>
                     )}
-                    <div><span className="text-slate-700">Unit cost:</span> {formatUSD(unitCost || 0)}</div>
-                    <div><span className="text-slate-700">Total value:</span> {formatUSD(Math.max(0, outcome.acceptQty) * (unitCost || 0))}</div>
                   </div>
-                  {notes?.trim() && (
-                    <div className="text-xs text-slate-700">Notes: {notes.trim()}</div>
-                  )}
+
+                  <div className="space-y-3">
+                    <h4 className="font-medium text-sm">Items to Process ({receivingLines.filter(l => l.skuId && l.qty > 0).length}):</h4>
+                    <div className="border rounded-lg overflow-hidden">
+                      <Table>
+                        <TableHeader>
+                          <TableRow className="bg-slate-50">
+                            <TableHead className="text-xs">SKU</TableHead>
+                            <TableHead className="text-xs text-right">Qty</TableHead>
+                            <TableHead className="text-xs text-right">Cost</TableHead>
+                            <TableHead className="text-xs text-right">Value</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {receivingLines.filter(l => l.skuId && l.qty > 0).map(line => (
+                            <TableRow key={line.id} className="text-xs">
+                              <TableCell>{line.skuId}</TableCell>
+                              <TableCell className="text-right">{line.qty}</TableCell>
+                              <TableCell className="text-right">${line.unitCost.toFixed(2)}</TableCell>
+                              <TableCell className="text-right">${(line.qty * line.unitCost).toFixed(2)}</TableCell>
+                            </TableRow>
+                          ))}
+                          <TableRow className="bg-slate-50 font-medium text-xs">
+                            <TableCell>Total</TableCell>
+                            <TableCell className="text-right">
+                              {receivingLines.filter(l => l.skuId && l.qty > 0).reduce((sum, l) => sum + l.qty, 0)}
+                            </TableCell>
+                            <TableCell></TableCell>
+                            <TableCell className="text-right">
+                              ${receivingLines.filter(l => l.skuId && l.qty > 0).reduce((sum, l) => sum + (l.qty * l.unitCost), 0).toFixed(2)}
+                            </TableCell>
+                          </TableRow>
+                        </TableBody>
+                      </Table>
+                    </div>
+                  </div>
+
                   <div className="flex justify-end gap-2 pt-2">
                     <Button
                       variant="outline"
@@ -1359,8 +1439,14 @@ export default function Receiving({ vendors, skus, layersBySku, movements, onUpd
                     >
                       Cancel
                     </Button>
-                    <Button onClick={performApprove} disabled={isPending}>
-                      {isPending ? 'Submitting…' : 'Confirm & submit'}
+                    <Button 
+                      onClick={() => {
+                        setConfirmOpen(false);
+                        processAllReceivings();
+                      }} 
+                      disabled={batchProcessing}
+                    >
+                      {batchProcessing ? 'Processing...' : 'Confirm & Process All'}
                     </Button>
                   </div>
                 </CardContent>
@@ -1369,38 +1455,58 @@ export default function Receiving({ vendors, skus, layersBySku, movements, onUpd
           </div>,
           document.body
         )}
-        
-        {/* Sticky Action Bar */}
-        <div className="sticky bottom-0 bg-white border-t p-4">
-          <div className="flex justify-end gap-3">
-            <Button variant="outline" type="button">Cancel</Button>
-            {isDamaged && damageScope === 'FULL' ? (
-              <>
-                <Button variant="destructive" onClick={handleRejectAll}>
-                  Reject entire packing slip
-                </Button>
-                <Button 
-                  variant="outline" 
-                  onClick={handleReturnToVendor}
-                  disabled={!vendorValue.trim() || receivingQty <= 0}
-                >
-                  Return to vendor
-                </Button>
-              </>
-            ) : (
-              <Button 
-                onClick={handleApprove}
-                disabled={!isFormValid}
-                className="min-w-[200px]"
-              >
-                {isDamaged && damageScope === 'PARTIAL' 
-                  ? `Approve partial (${Math.max(0, receivingQty - rejectedQty)} in, ${rejectedQty} out)` 
-                  : 'Approve & add to inventory'
-                }
-              </Button>
-            )}
-          </div>
-        </div>
+
+        {/* Batch Results Modal */}
+        {showBatchResults && batchResults.length > 0 && createPortal(
+          <div className="fixed inset-0 z-50" role="presentation">
+            <div
+              className="absolute inset-0 bg-black/30"
+              aria-hidden="true"
+              onClick={() => setShowBatchResults(false)}
+            />
+            <div
+              className="absolute left-1/2 top-24 -translate-x-1/2 w-[min(100%,640px)]"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="batch-results-title"
+            >
+              <Card className="rounded-2xl shadow-2xl bg-white ring-1 ring-black/10">
+                <CardHeader>
+                  <CardTitle id="batch-results-title">Processing Results</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="space-y-2">
+                    {batchResults.map((result, index) => (
+                      <div 
+                        key={result.line.id} 
+                        className={`flex items-center gap-3 p-3 rounded-lg text-sm ${
+                          result.success ? 'bg-green-50 text-green-800' : 'bg-red-50 text-red-800'
+                        }`}
+                      >
+                        <span className={`w-5 h-5 rounded-full flex items-center justify-center text-xs ${
+                          result.success ? 'bg-green-600 text-white' : 'bg-red-600 text-white'
+                        }`}>
+                          {result.success ? '✓' : '✗'}
+                        </span>
+                        <span className="flex-1">
+                          <strong>{result.line.skuId}</strong> - {result.line.qty} units
+                          {result.error && <div className="text-xs mt-1">Error: {result.error}</div>}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+
+                  <div className="flex justify-end gap-2 pt-2">
+                    <Button onClick={() => setShowBatchResults(false)}>
+                      Close
+                    </Button>
+                  </div>
+                </CardContent>
+              </Card>
+            </div>
+          </div>,
+          document.body
+        )}
       </Card>
 
       {/* Recent Layers Section */}
