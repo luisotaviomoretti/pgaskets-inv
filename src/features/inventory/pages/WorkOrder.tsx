@@ -826,9 +826,6 @@ ${costBreakdown}`);
                     </span>
                   </div>
                   {!hasMixedUnits && errors.producedQty && <ErrorMessage id="producedQty-error" message={errors.producedQty} />}
-                  {hasMixedUnits && (
-                    <div className="text-xs text-blue-600 mt-1">Mixed units: any quantity allowed.</div>
-                  )}
                 </div>
                 {/* Row 2 */}
                 <div className="md:col-span-12 lg:col-span-6">
