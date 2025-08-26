@@ -321,6 +321,16 @@ export default function WorkOrder({ skus, layersBySku, onUpdateLayers, onUpdateS
     return rawUnits.length > 1 && !rawUnits.every(unit => unit === rawUnits[0]);
   }, [rawMaterials, skus]);
 
+  // Calculate output unit from first raw material unit (matches backend logic)
+  const outputUnit = useMemo(() => {
+    const rawUnits = rawMaterials
+      .filter(r => r.skuId && r.qty > 0)
+      .map(r => skus.find(s => s.id === r.skuId)?.unit)
+      .filter(Boolean);
+    
+    return rawUnits[0] || '';
+  }, [rawMaterials, skus]);
+
 
 
   // Close modal on ESC
@@ -798,16 +808,23 @@ ${costBreakdown}`);
                 </div>
                 <div className="md:col-span-6 lg:col-span-3">
                   <Label className="mb-1.5 block">Produced quantity{!hasMixedUnits ? ' *' : ''}</Label>
-                  <Input 
-                    id="producedQty"
-                    type="number" 
-                    value={woProducedQty} 
-                    onChange={(e) => setWoProducedQty(Math.max(0, parseFloat(e.target.value || '0')))} 
-                    placeholder="0"
-                    className={`h-10 w-full ${errors.producedQty ? 'border-red-500 focus:ring-red-500' : ''}`}
-                    aria-invalid={!!errors.producedQty}
-                    aria-describedby={errors.producedQty ? 'producedQty-error' : undefined}
-                  />
+                  <div className="flex items-center gap-2">
+                    <Input 
+                      id="producedQty"
+                      type="number"
+                      min="0"
+                      step="any"
+                      value={woProducedQty || ''}
+                      onChange={(e) => setWoProducedQty(Math.max(0, parseFloat(e.target.value || '0')))} 
+                      placeholder="0"
+                      aria-invalid={!!errors.producedQty}
+                      aria-describedby={errors.producedQty ? 'producedQty-error' : undefined}
+                      className={`flex-1 h-10 ${errors.producedQty ? 'border-red-500 focus:ring-red-500' : ''}`}
+                    />
+                    <span className="text-xs text-slate-500 min-w-[36px] text-right">
+                      {outputUnit}
+                    </span>
+                  </div>
                   {!hasMixedUnits && errors.producedQty && <ErrorMessage id="producedQty-error" message={errors.producedQty} />}
                   {hasMixedUnits && (
                     <div className="text-xs text-blue-600 mt-1">Mixed units: any quantity allowed.</div>

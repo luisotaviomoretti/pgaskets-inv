@@ -975,7 +975,7 @@ export default function InventoryWireframe() {
             movementId: toMovementId(String(m.id)),
             datetime: (m.date instanceof Date ? m.date : new Date(m.date)),
             type: m.type as MovementTypeEnum,
-            skuOrName: m.skuId || m.productName || '',
+            skuOrName: m.skuDescription || m.productName || m.skuId || '',
             skuId: m.skuId || '',
             qty: m.quantity,
             value: m.totalCost || 0,
@@ -1709,9 +1709,9 @@ export default function InventoryWireframe() {
     // Inventory series (value) at end of each bin
     const inventorySeries = bins.map(([_, e]) => invAt(e));
 
-    // COGS per bin & total (from ISSUE movements)
+    // COGS per bin & total (from PRODUCE movements)
     const cogsPerBin = bins.map(([s, e]) => movementLog
-      .filter(m => m.type === 'ISSUE')
+      .filter(m => m.type === 'PRODUCE')
       .reduce((sum, m) => {
         const ts = +parseStamp(m.datetime);
         return ts > s && ts <= e ? sum + (m.value || 0) : sum;
@@ -1884,16 +1884,16 @@ export default function InventoryWireframe() {
                   <MetricCard 
                     title="Cost of Goods Sold (COGS)" 
                     primary={fmtMoney(kpiData.cogsTotal)} 
-                    secondary="Total cost of inventory issued in period" 
+                    secondary="Total cost of goods produced in period" 
                     series={cogsValues} 
                     chartType="bars"
                     valueFormatter={fmtMoney}
                     labels={periodLabels}
                     infoContent={
                       <div>
-                        <p>Total cost of goods sold (issued from inventory) in the selected period.</p>
+                        <p>Total cost of goods sold (produced) in the selected period.</p>
                         <ul className="list-disc pl-4 mt-1 space-y-1">
-                          <li><strong>COGS</strong>: {fmtMoney(kpiData.cogsTotal)} from ISSUE movements</li>
+                          <li><strong>COGS</strong>: {fmtMoney(kpiData.cogsTotal)} from PRODUCE movements</li>
                           <li><strong>Inventory (start/end)</strong>: {fmtMoney(kpiData.invStart)} → {fmtMoney(kpiData.invEnd)}</li>
                           <li><strong>Average Inventory</strong>: {fmtMoney(kpiData.avgInvPeriod)}</li>
                           <li><strong>Turnover Ratio</strong>: {Number.isFinite(kpiData.turnoverVal) ? kpiData.turnoverVal.toFixed(2) : '—'}x</li>
