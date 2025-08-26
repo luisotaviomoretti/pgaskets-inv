@@ -1,6 +1,7 @@
 import { createRoot } from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
+import { Analytics } from '@vercel/analytics/react';
 import InventoryWireframe from '@/features/inventory/pages/Wireframe';
 import { AuthProvider } from '@/components/auth/AuthContext';
 import LoginPage from '@/components/auth/LoginPage';
@@ -43,5 +44,6 @@ const queryClient = new QueryClient();
 createRoot(rootEl).render(
   <QueryClientProvider client={queryClient}>
     <App />
+    <Analytics />
   </QueryClientProvider>
 );
