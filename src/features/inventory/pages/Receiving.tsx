@@ -36,6 +36,7 @@ import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '@
 import { Badge } from '@/components/ui/badge';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Textarea } from '@/components/ui/textarea';
+import { ScrollArea } from '@/components/ui/scroll-area';
 import { Layers, Package, Plus, Minus } from '@/components/ui/icons';
 import {
   UISKUOption as SKU,
@@ -43,7 +44,7 @@ import {
   VendorSuggestion as Vendor,
   toVendorId,
 } from '@/features/inventory/types/inventory.types';
-import { processReceiving } from '@/features/inventory/services/inventory.adapter';
+import { processReceiving, getFIFOLayers } from '@/features/inventory/services/inventory.adapter';
 import { 
   formatUSD, 
   parseUSDInput, 
@@ -409,6 +410,33 @@ function MultiSKUSelect({
 }
 
 export default function Receiving({ vendors, skus, layersBySku, movements, onUpdateLayers, onUpdateSKU, onAddMovement }: ReceivingProps) {
+  const [selectedLayersSku, setSelectedLayersSku] = useState<string>('');
+  const [activeLayers, setActiveLayers] = useState<Layer[]>([]);
+  const [isLoadingLayers, setIsLoadingLayers] = useState<boolean>(false);
+      const [showAllLayers, setShowAllLayers] = useState<boolean>(false);
+
+  useEffect(() => {
+    if (!selectedLayersSku) {
+      setActiveLayers([]);
+      return;
+    }
+
+    const fetchLayers = async () => {
+      setIsLoadingLayers(true);
+      try {
+        const layers = await getFIFOLayers(selectedLayersSku);
+        setActiveLayers(layers || []);
+      } catch (error) {
+        console.error("Failed to fetch FIFO layers:", error);
+        setActiveLayers([]);
+      } finally {
+        setIsLoadingLayers(false);
+      }
+    };
+
+    fetchLayers();
+  }, [selectedLayersSku]);
+
   // Multi-SKU receiving lines
   const [receivingLines, setReceivingLines] = useState<ReceivingLine[]>([
     { id: '1', skuId: '', qty: 0, unitCost: 0, notes: '' }
@@ -1440,33 +1468,77 @@ export default function Receiving({ vendors, skus, layersBySku, movements, onUpd
       {/* Recent Layers Section */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <div className="lg:col-span-2">
-          <SectionCard title="Recent RAW layers (FIFO)" icon={<Layers className="h-5 w-5 text-slate-500"/>}>
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Layer ID</TableHead>
-                  <TableHead>Date</TableHead>
-                  <TableHead>Remaining qty</TableHead>
-                  <TableHead>Unit cost</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {(layersBySku[receivingSku] || []).slice(0, 3).map((l) => (
-                  <TableRow key={l.id}>
-                    <TableCell>{l.id}</TableCell>
-                    <TableCell>{typeof l.date === 'string' ? l.date : new Date(l.date).toLocaleDateString()}</TableCell>
-                    <TableCell>{l.remaining}</TableCell>
-                    <TableCell>{formatUSD(l.cost)}</TableCell>
-                  </TableRow>
-                ))}
-                {(!receivingSku || (layersBySku[receivingSku] || []).length === 0) && (
-                  <TableRow>
-                    <TableCell colSpan={4} className="text-sm text-slate-500">Select a SKU to view its recent layers.</TableCell>
-                  </TableRow>
-                )}
-              </TableBody>
-            </Table>
-          </SectionCard>
+          <Card className="rounded-xl border border-dashed">
+            <CardHeader className="py-4">
+              <div className="flex items-center justify-between">
+                <CardTitle className="flex items-center gap-2 text-lg">
+                  <Layers className="h-5 w-5 text-slate-500"/>
+                  Inventory Layers (FIFO)
+                </CardTitle>
+                <div className="w-1/2">
+                  <Select value={selectedLayersSku} onValueChange={setSelectedLayersSku}>
+                    <SelectTrigger placeholder="Select a SKU...">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {skus.map(s => (
+                        <SelectItem key={s.id} value={s.id}>
+                          {s.id} — {s.description}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+            </CardHeader>
+            <CardContent>
+              <ScrollArea className="h-[300px] pr-4">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Layer ID</TableHead>
+                      <TableHead>Date</TableHead>
+                      <TableHead>Remaining qty</TableHead>
+                      <TableHead>Unit cost</TableHead>
+                      <TableHead>Asset Value</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {isLoadingLayers ? (
+                      <TableRow>
+                        <TableCell colSpan={5} className="text-center text-sm text-slate-500">Loading layers...</TableCell>
+                      </TableRow>
+                    ) : !selectedLayersSku ? (
+                      <TableRow>
+                        <TableCell colSpan={5} className="text-center text-sm text-slate-500">Select a SKU to view its layers.</TableCell>
+                      </TableRow>
+                    ) : activeLayers.filter(l => l.remaining > 0).length === 0 ? (
+                      <TableRow>
+                        <TableCell colSpan={5} className="text-center text-sm text-slate-500">No active layers found for the selected SKU.</TableCell>
+                      </TableRow>
+                    ) : (
+                      (showAllLayers ? activeLayers.filter(l => l.remaining > 0) : activeLayers.filter(l => l.remaining > 0).slice(0, 10)).map((l) => (
+                        <TableRow key={l.id}>
+                          <TableCell>{l.id}</TableCell>
+                          <TableCell>{typeof l.date === 'string' ? l.date : new Date(l.date).toLocaleDateString()}</TableCell>
+                          <TableCell>{l.remaining}</TableCell>
+                          <TableCell>{formatUSD(l.cost)}</TableCell>
+                          <TableCell>{formatUSD(l.remaining * l.cost)}</TableCell>
+                        </TableRow>
+                      ))
+                    )}
+                  </TableBody>
+                </Table>
+              </ScrollArea>
+              {activeLayers.filter(l => l.remaining > 0).length > 10 && (
+                <div className="mt-2 text-center">
+                  <Button variant="link" onClick={() => setShowAllLayers(!showAllLayers)}>
+                    {showAllLayers ? 'Show less' : `View all ${activeLayers.filter(l => l.remaining > 0).length} layers`}
+                  </Button>
+                </div>
+              )}
+            </CardContent>
+          </Card>
         </div>
 
         <div className="space-y-4">
