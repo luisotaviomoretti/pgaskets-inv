@@ -282,7 +282,7 @@ export default function Movements({ movements = [], onDeleteMovement, onExportEx
     return result;
   }, [movements, deferredSku, deferredWo, typeFilter, rangeStart, rangeEnd]);
 
-  // Filter movements applicable for journal (RECEIVE, PRODUCE, WASTE) with export tracking
+  // Filter movements applicable for journal (RECEIVE, COGS, WASTE) with export tracking
   const journalApplicableMovements = useMemo(() => {
     const applicableMovements = filteredMovements.filter(([movement]) => 
       [MovementType.RECEIVE, MovementType.PRODUCE, MovementType.WASTE].includes(movement.type)
@@ -539,9 +539,9 @@ export default function Movements({ movements = [], onDeleteMovement, onExportEx
               <SelectContent>
                 <SelectItem value="">All types</SelectItem>
                 <SelectItem value={MovementType.RECEIVE}>RECEIVE</SelectItem>
-                <SelectItem value={MovementType.ISSUE}>ISSUE</SelectItem>
+                <SelectItem value={MovementType.ISSUE}>MATERIAL USAGE</SelectItem>
                 <SelectItem value={MovementType.WASTE}>WASTE</SelectItem>
-                <SelectItem value={MovementType.PRODUCE}>PRODUCE</SelectItem>
+                <SelectItem value={MovementType.PRODUCE}>COGS</SelectItem>
               </SelectContent>
             </Select>
           </div>
@@ -595,14 +595,16 @@ export default function Movements({ movements = [], onDeleteMovement, onExportEx
                               {dateTimeFmt.format(m.datetime instanceof Date ? m.datetime : new Date(m.datetime))}
                             </th>
                             <TableCell>
-                              <Badge variant={getMovementBadgeVariant(m.type)}>{m.type}</Badge>
+                              <Badge variant={getMovementBadgeVariant(m.type)}>
+                            {m.type === MovementType.PRODUCE ? 'COGS' : m.type === MovementType.ISSUE ? 'MATERIAL USAGE' : m.type}
+                          </Badge>
                             </TableCell>
                             <TableCell>{m.skuOrName}</TableCell>
-                            <TableCell className={m.qty > 0 ? 'text-green-600' : 'text-red-600'}>
-                              {m.qty > 0 ? `+${m.qty}` : m.qty}
+                            <TableCell>
+                              {m.type === MovementType.RECEIVE ? (m.qty > 0 ? `+${m.qty}` : m.qty) : Math.abs(m.qty)}
                             </TableCell>
-                            <TableCell className={m.value > 0 ? 'text-green-600' : 'text-red-600'}>
-                              {currencyFmt.format(m.value)}
+                            <TableCell className={m.type === MovementType.RECEIVE ? (m.value > 0 ? 'text-green-600' : 'text-red-600') : ''}>
+                              {m.type === MovementType.RECEIVE ? currencyFmt.format(m.value) : currencyFmt.format(Math.abs(m.value))}
                             </TableCell>
                             <TableCell>{m.ref}</TableCell>
                             <TableCell>
@@ -775,7 +777,7 @@ export default function Movements({ movements = [], onDeleteMovement, onExportEx
                   <div className="text-sm font-medium text-green-700">Journal Structure:</div>
                   <div className="text-xs text-green-600 space-y-1">
                     <div><strong>RECEIVE:</strong> Debit Inventory, Credit Accounts Payable</div>
-                    <div><strong>PRODUCE:</strong> Debit COGS, Credit Inventory</div>
+                    <div><strong>COGS:</strong> Debit COGS, Credit Inventory</div>
                     <div><strong>WASTE:</strong> Debit Shrinkage Expense, Credit Inventory</div>
                   </div>
                 </div>
@@ -812,7 +814,7 @@ export default function Movements({ movements = [], onDeleteMovement, onExportEx
             {confirmDelete !== null && (
               <span className="text-sm text-slate-600">
                 {findMovementById(confirmDelete)?.type === MovementType.PRODUCE
-                  ? 'This will permanently delete the PRODUCE movement and all related WASTE and ISSUE movements, restoring stock with FIFO integrity.'
+                  ? 'This will permanently delete the COGS movement and all related WASTE and MATERIAL USAGE movements, restoring stock with FIFO integrity.'
                   : 'This will permanently delete the RECEIVE movement and restore stock with FIFO integrity.'}
               </span>
             )}

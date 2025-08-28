@@ -673,10 +673,9 @@ ${costBreakdown}`);
                         <TableCell className="min-w-[220px]">
                           <SKUSelect
                             skus={skus}
-                            filter="RAW"
                             value={r.skuId}
                             onChange={(v) => updateRawMaterialLine(r.id, { skuId: v })}
-                            placeholder="Select Raw SKU"
+                            placeholder="Select SKU"
                             id={`raw-sku-${r.id}`}
                             error={errors[`raw-sku-${r.id}`]}
                           />
@@ -890,7 +889,6 @@ ${costBreakdown}`);
                   Debug issues
                 </Button>
               )}
-              <Button variant="outline" className="rounded-xl">Save draft</Button>
             </div>
           </div>
         </SectionCard>

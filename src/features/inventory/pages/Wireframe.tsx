@@ -1371,13 +1371,22 @@ export default function InventoryWireframe() {
         ? movement.datetime 
         : new Date(movement.datetime);
       
+      // Apply same logic as UI display for quantity and value
+      const quantity = movement.type === MovementTypeEnum.RECEIVE 
+        ? (movement.qty > 0 ? movement.qty : movement.qty) 
+        : Math.abs(movement.qty || 0);
+      
+      const value = movement.type === MovementTypeEnum.RECEIVE 
+        ? (movement.value ? movement.value.toFixed(2) : 0)
+        : (movement.value ? Math.abs(movement.value).toFixed(2) : 0);
+      
       return {
         'Date': datetime.toLocaleDateString('en-US'),
         'Time': datetime.toLocaleTimeString('en-US'),
         'Type': movement.type,
         'SKU/Product': movement.skuOrName || '-',
-        'Quantity': movement.qty || 0,
-        'Value': movement.value ? movement.value.toFixed(2) : 0,
+        'Quantity': quantity,
+        'Value': value,
         'Reference': movement.ref || '-',
       };
     });
@@ -1498,7 +1507,7 @@ export default function InventoryWireframe() {
     );
 
     if (journalMovements.length === 0) {
-      toast.info('No applicable movements for journal export (RECEIVE, PRODUCE, WASTE only)');
+      toast.info('No applicable movements for journal export (RECEIVE, COGS, WASTE only)');
       return;
     }
 
@@ -1709,7 +1718,7 @@ export default function InventoryWireframe() {
     // Inventory series (value) at end of each bin
     const inventorySeries = bins.map(([_, e]) => invAt(e));
 
-    // COGS per bin & total (from PRODUCE movements)
+    // COGS per bin & total (from COGS movements)
     const cogsPerBin = bins.map(([s, e]) => movementLog
       .filter(m => m.type === 'PRODUCE')
       .reduce((sum, m) => {
@@ -1717,6 +1726,15 @@ export default function InventoryWireframe() {
         return ts > s && ts <= e ? sum + (m.value || 0) : sum;
       }, 0));
     const cogsTotal = cogsPerBin.reduce((a, b) => a + b, 0);
+
+    // Shrinkage per bin & total (from WASTE movements)
+    const shrinkagePerBin = bins.map(([s, e]) => movementLog
+      .filter(m => m.type === 'WASTE')
+      .reduce((sum, m) => {
+        const ts = +parseStamp(m.datetime);
+        return ts > s && ts <= e ? sum + (m.value || 0) : sum;
+      }, 0));
+    const shrinkageTotal = shrinkagePerBin.reduce((a, b) => a + b, 0);
 
     // Inventory Turnover = COGS / Average Inventory (period)
     const invStart = invAt(rangeStart);
@@ -1757,6 +1775,8 @@ export default function InventoryWireframe() {
       turnoverVal,
       turnoverSeries,
       cogsTotal,
+      shrinkageTotal,
+      shrinkageSeries: shrinkagePerBin,
       doiVal,
       doiSeries,
       dailyCOGS,
@@ -1861,7 +1881,7 @@ export default function InventoryWireframe() {
                 </div>
               </CardHeader>
               <CardContent>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 max-w-4xl mx-auto">
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 max-w-4xl mx-auto">
                   <MetricCard 
                     title="Total Inventory Value" 
                     primary={fmtMoney(kpiData.inv.value)} 
@@ -1893,10 +1913,28 @@ export default function InventoryWireframe() {
                       <div>
                         <p>Total cost of goods sold (produced) in the selected period.</p>
                         <ul className="list-disc pl-4 mt-1 space-y-1">
-                          <li><strong>COGS</strong>: {fmtMoney(kpiData.cogsTotal)} from PRODUCE movements</li>
+                          <li><strong>COGS</strong>: {fmtMoney(kpiData.cogsTotal)} from COGS movements</li>
                           <li><strong>Inventory (start/end)</strong>: {fmtMoney(kpiData.invStart)} → {fmtMoney(kpiData.invEnd)}</li>
                           <li><strong>Average Inventory</strong>: {fmtMoney(kpiData.avgInvPeriod)}</li>
                           <li><strong>Turnover Ratio</strong>: {Number.isFinite(kpiData.turnoverVal) ? kpiData.turnoverVal.toFixed(2) : '—'}x</li>
+                        </ul>
+                      </div>
+                    }
+                  />
+                  <MetricCard
+                    title="Shrinkage"
+                    primary={fmtMoney(kpiData.shrinkageTotal)}
+                    secondary="Total value of waste in period"
+                    series={kpiData.shrinkageSeries}
+                    chartType="bars"
+                    valueFormatter={fmtMoney}
+                    labels={periodLabels}
+                    infoContent={
+                      <div>
+                        <p>Total value of inventory lost to waste, damage, or other forms of shrinkage in the selected period.</p>
+                        <ul className="list-disc pl-4 mt-1 space-y-1">
+                          <li><strong>Calculation</strong>: Sum of the value of all 'WASTE' type movements.</li>
+                          <li><strong>Impact</strong>: Directly reduces inventory value and profitability.</li>
                         </ul>
                       </div>
                     }

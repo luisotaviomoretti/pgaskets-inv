@@ -20,9 +20,9 @@ export const MATERIAL_TYPE_LABELS: Record<MaterialType, string> = {
  */
 export const MOVEMENT_TYPE_LABELS: Record<MovementType, string> = {
   [MovementType.RECEIVE]: 'Recebimento',
-  [MovementType.ISSUE]: 'Baixa/Consumo',
+  [MovementType.ISSUE]: 'Uso de Material',
   [MovementType.WASTE]: 'Sucata/Perda',
-  [MovementType.PRODUCE]: 'Produção',
+  [MovementType.PRODUCE]: 'COGS',
   [MovementType.ADJUSTMENT]: 'Ajuste',
   [MovementType.TRANSFER]: 'Transferência',
 };

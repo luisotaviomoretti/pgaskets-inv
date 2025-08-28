@@ -101,8 +101,8 @@ interface ReceivingProps {
   onAddMovement?: (movement: { datetime: string; type: 'RECEIVE' | 'ISSUE' | 'WASTE' | 'PRODUCE'; skuOrName: string; qty: number; value: number; ref: string }) => void;
 }
 
-// Enhanced vendor autocomplete with validation and accessibility
-function VendorAutocomplete({ 
+// Simple vendor select with search capability
+function VendorSelect({ 
   value, 
   onChange, 
   suggestions, 
@@ -115,175 +115,85 @@ function VendorAutocomplete({
   error?: string;
   id: string;
 }) {
-  const [query, setQuery] = useState<string>(value || '');
-  const [open, setOpen] = useState(false);
-  const [list, setList] = useState<Vendor[]>([]);
-  const [activeIndex, setActiveIndex] = useState<number>(-1);
-  const inputRef = useRef<HTMLInputElement | null>(null);
-  const listRef = useRef<HTMLDivElement | null>(null);
-  const listboxId = `${id}-listbox`;
+  // Allow custom input as well as selection from list
+  const [isCustom, setIsCustom] = useState(false);
+  const [customValue, setCustomValue] = useState('');
 
-  useEffect(() => { setQuery(value || ''); }, [value]);
-
+  // Check if current value is in suggestions
+  const isValueInSuggestions = suggestions.some(v => v.name === value);
+  
   useEffect(() => {
-    const timer = setTimeout(() => {
-      if (query.trim().length >= 3) {
-        const q = query.trim().toLowerCase();
-        const filtered = suggestions.filter(v => v.name.toLowerCase().includes(q)).slice(0, 8);
-        setList(filtered);
-        // Keep listbox open even when no results to show fallback
-        setOpen(true);
-        setActiveIndex(filtered.length > 0 ? 0 : -1);
-      } else {
-        setList([]);
-        setOpen(false);
-        setActiveIndex(-1);
-      }
-      onChange(query);
-    }, 300);
-    return () => clearTimeout(timer);
-  }, [query, suggestions, onChange]);
-
-  const handleBlur = () => {
-    setTimeout(() => setOpen(false), 150);
-  };
-
-  const completion = useMemo(() => {
-    const best = list[0]?.name || "";
-    return best.toLowerCase().startsWith((query || "").toLowerCase()) ? best.slice(query.length) : "";
-  }, [list, query]);
-
-  const handleInputChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
-    setQuery(e.target.value);
-  }, []);
-
-  const handleFocus = useCallback(() => {
-    if (list.length > 0) setOpen(true);
-  }, [list.length]);
-
-  const onKeyDown = useCallback((e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (!open && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
-      setOpen(true);
+    if (!isValueInSuggestions && value) {
+      setIsCustom(true);
+      setCustomValue(value);
     }
-    if (e.key === 'ArrowDown') {
-      e.preventDefault();
-      setActiveIndex((prev) => {
-        const size = list.length;
-        if (size === 0) return -1;
-        return prev < 0 ? 0 : (prev + 1) % size;
-      });
-    } else if (e.key === 'ArrowUp') {
-      e.preventDefault();
-      setActiveIndex((prev) => {
-        const size = list.length;
-        if (size === 0) return -1;
-        return prev <= 0 ? size - 1 : prev - 1;
-      });
-    } else if (e.key === 'Enter') {
-      if (open) {
-        e.preventDefault();
-        if (activeIndex >= 0 && list[activeIndex]) {
-          const v = list[activeIndex];
-          setQuery(v.name);
-          setOpen(false);
-          onChange(v.name);
-        } else if (list.length === 1) {
-          const v = list[0];
-          setQuery(v.name);
-          setOpen(false);
-          onChange(v.name);
-        }
-      }
-    } else if (e.key === 'Escape') {
-      if (open) {
-        e.preventDefault();
-        setOpen(false);
-      }
-    }
-  }, [open, list, activeIndex, onChange]);
+  }, [value, isValueInSuggestions]);
 
-  const handleOptionMouseEnter = useCallback((e: React.MouseEvent<HTMLButtonElement>) => {
-    const idx = Number.parseInt((e.currentTarget.dataset.index as string) || '-1', 10);
-    if (!Number.isNaN(idx)) setActiveIndex(idx);
-  }, []);
-
-  const handleOptionMouseDown = useCallback((e: React.MouseEvent<HTMLButtonElement>) => {
-    // Prevent input blur before click handler runs
-    e.preventDefault();
-  }, []);
-
-  const handleOptionClick = useCallback((e: React.MouseEvent<HTMLButtonElement>) => {
-    const idx = Number.parseInt((e.currentTarget.dataset.index as string) || '-1', 10);
-    if (idx >= 0 && list[idx]) {
-      const v = list[idx];
-      setQuery(v.name);
-      setOpen(false);
-      onChange(v.name);
-      inputRef.current?.focus();
-    }
-  }, [list, onChange]);
+  if (isCustom) {
+    return (
+      <div className="flex items-center gap-1 h-10 w-full max-w-full min-w-0">
+        <Input 
+          id={id}
+          value={customValue}
+          onChange={(e) => {
+            setCustomValue(e.target.value);
+            onChange(e.target.value);
+          }}
+          placeholder="Enter vendor..."
+          className={`flex-1 h-full min-w-0 ${error ? 'border-red-500 focus:ring-red-500' : ''}`}
+          aria-invalid={!!error}
+          aria-describedby={error ? `${id}-error` : undefined}
+        />
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={() => {
+            setIsCustom(false);
+            setCustomValue('');
+            onChange('');
+          }}
+          className="px-1 h-full text-xs shrink-0 min-w-0 w-6"
+          title="Select from list"
+        >
+          ↓
+        </Button>
+      </div>
+    );
+  }
 
   return (
-    <div className="relative">
-      <div className="pointer-events-none absolute inset-0 flex items-center px-3 text-slate-400/60">
-        <span className="invisible">{query}</span>
-        <span>{completion}</span>
-      </div>
-      
-      <Input 
-        id={id}
-        ref={inputRef}
-        value={query} 
-        onChange={handleInputChange}
-        onBlur={handleBlur}
-        onFocus={handleFocus}
-        onKeyDown={onKeyDown}
-        placeholder="Type vendor name (≥3 chars)..."
-        className={`w-full ${error ? 'border-red-500 focus:ring-red-500' : ''}`}
-        aria-invalid={!!error}
-        aria-describedby={error ? `${id}-error` : undefined}
-        role="combobox"
-        aria-autocomplete="list"
-        aria-controls={listboxId}
-        aria-expanded={open}
-        aria-activedescendant={activeIndex >= 0 ? `${id}-option-${activeIndex}` : undefined}
-      />
-      
-      {open && (
-        <div
-          id={listboxId}
-          role="listbox"
-          aria-label="Vendor suggestions"
-          ref={listRef}
-          className="absolute z-50 left-0 right-0 mt-1 rounded-xl border bg-white shadow-lg overflow-auto max-h-64"
+    <div className="flex items-center gap-1 h-10 w-full max-w-full min-w-0">
+      <Select value={value} onValueChange={onChange}>
+        <SelectTrigger 
+          id={id}
+          className={`flex-1 h-full min-w-0 ${error ? 'border-red-500 focus:ring-red-500' : ''}`}
+          aria-invalid={!!error}
+          aria-describedby={error ? `${id}-error` : undefined}
         >
-          {list.length === 0 ? (
-            <div className="px-3 py-2 text-sm text-slate-500" aria-live="polite">No results</div>
-          ) : (
-            list.map((v, i) => (
-              <button
-                key={v.name}
-                id={`${id}-option-${i}`}
-                role="option"
-                aria-selected={i === activeIndex}
-                type="button"
-                className={`w-full text-left px-3 py-2 focus:outline-none ${i === activeIndex ? 'bg-slate-100' : 'hover:bg-slate-50'}`}
-                data-index={i}
-                onMouseEnter={handleOptionMouseEnter}
-                onMouseDown={handleOptionMouseDown}
-                onClick={handleOptionClick}
-              >
-                <div className="text-sm font-medium">{v.name}</div>
-                {(v.address || v.bank) && (
-                  <div className="text-xs text-slate-500 truncate">
-                    {v.address ?? ""}{v.address && v.bank ? " • " : ""}{v.bank ?? ""}
-                  </div>
-                )}
-              </button>
-            ))
-          )}
-        </div>
-      )}
+          <SelectValue placeholder="Select vendor..." />
+        </SelectTrigger>
+        <SelectContent className="max-h-64">
+          {suggestions.map(v => (
+            <SelectItem key={v.name} value={v.name}>
+              <span className="font-medium">{v.name}</span>
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        onClick={() => {
+          setIsCustom(true);
+          setCustomValue(value);
+        }}
+        className="px-1 h-full text-xs shrink-0 min-w-0 w-6"
+        title="Enter custom vendor"
+      >
+        +
+      </Button>
     </div>
   );
 }
@@ -404,7 +314,7 @@ function CurrencyInput({
       onFocus={handleFocus}
       onBlur={handleBlur}
       placeholder={placeholder}
-      className={`h-10 ${error ? 'border-red-500 focus:ring-red-500' : ''}`}
+      className={`h-9 w-full ${error ? 'border-red-500 focus:ring-red-500' : ''}`}
       aria-invalid={!!error}
       aria-describedby={error ? `${id}-error` : undefined}
     />
@@ -1113,68 +1023,78 @@ export default function Receiving({ vendors, skus, layersBySku, movements, onUpd
         </CardHeader>
         <CardContent className="p-6 space-y-6">
           {/* Shared Fields */}
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-4 p-4 bg-slate-50 rounded-lg">
-            <div className="space-y-2">
-              <Label htmlFor="shared-date" className="text-sm font-medium">Date</Label>
-              <Input 
-                id="shared-date"
-                type="date" 
-                value={sharedFields.date}
-                onChange={(e) => setSharedFields(prev => ({ ...prev, date: e.target.value }))}
-                className="h-10"
-              />
-            </div>
-            
-            <div className="space-y-2">
-              <Label htmlFor="shared-vendor" className="text-sm font-medium">Vendor *</Label>
-              <VendorAutocomplete 
-                id="shared-vendor"
-                value={sharedFields.vendor} 
-                onChange={(value) => setSharedFields(prev => ({ ...prev, vendor: value }))}
-                suggestions={vendors}
-                error={errors.vendor}
-              />
-              {errors.vendor && <ErrorMessage message={errors.vendor} id="shared-vendor-error" />}
-            </div>
-
-            <div className="space-y-2">
-              <Label htmlFor="shared-packing-slip" className="text-sm font-medium">Packing Slip</Label>
-              <div className="flex items-center gap-2">
+          <div className="w-full p-4 bg-slate-50 rounded-lg">
+            <div className="flex flex-col lg:flex-row gap-3 w-full">
+              {/* Date Field */}
+              <div className="flex flex-col space-y-2 lg:w-[22%] min-w-0">
+                <Label htmlFor="shared-date" className="text-sm font-medium text-slate-700">Date</Label>
                 <Input 
-                  id="shared-packing-slip"
-                  value={sharedFields.packingSlip}
-                  onChange={(e) => {
-                    setSharedFields(prev => ({ ...prev, packingSlip: e.target.value }));
-                    setPackingSlipEdited(true);
-                  }}
-                  onFocus={() => {
-                    // If user focuses on empty field, allow auto-suggestions again
-                    if (!sharedFields.packingSlip) {
-                      setPackingSlipEdited(false);
-                    }
-                  }}
-                  className="h-10 flex-1"
-                  placeholder="Auto-generated or enter manually"
+                  id="shared-date"
+                  type="date" 
+                  value={sharedFields.date}
+                  onChange={(e) => setSharedFields(prev => ({ ...prev, date: e.target.value }))}
+                  className="h-10 w-full"
                 />
-                {!packingSlipEdited && sharedFields.packingSlip && (
-                  <Badge variant="secondary" className="text-xs px-2 py-1">
-                    Auto
-                  </Badge>
-                )}
               </div>
-            </div>
+              
+              {/* Vendor Field - Máximo espaço */}
+              <div className="flex flex-col space-y-2 lg:w-[40%] min-w-0 max-w-[40%]">
+                <Label htmlFor="shared-vendor" className="text-sm font-medium text-slate-700">Vendor *</Label>
+                <div className="h-10 w-full min-w-0 overflow-hidden">
+                  <VendorSelect 
+                    id="shared-vendor"
+                    value={sharedFields.vendor} 
+                    onChange={(value) => setSharedFields(prev => ({ ...prev, vendor: value }))}
+                    suggestions={vendors}
+                    error={errors.vendor}
+                  />
+                </div>
+                {errors.vendor && <ErrorMessage message={errors.vendor} id="shared-vendor-error" />}
+              </div>
 
-            <div className="space-y-2">
-              <Label className="text-sm font-medium">Damage Status</Label>
-              <div className="flex items-center space-x-2">
-                <input 
-                  id="shared-damaged"
-                  type="checkbox"
-                  checked={sharedFields.isDamaged}
-                  onChange={(e) => setSharedFields(prev => ({ ...prev, isDamaged: e.target.checked }))}
-                  className="rounded"
-                />
-                <Label htmlFor="shared-damaged" className="text-sm">Items damaged</Label>
+              {/* Packing Slip Field */}
+              <div className="flex flex-col space-y-2 lg:w-[20%] min-w-0">
+                <Label htmlFor="shared-packing-slip" className="text-sm font-medium text-slate-700">Packing Slip</Label>
+                <div className="relative h-10 w-full">
+                  <Input 
+                    id="shared-packing-slip"
+                    value={sharedFields.packingSlip}
+                    onChange={(e) => {
+                      setSharedFields(prev => ({ ...prev, packingSlip: e.target.value }));
+                      setPackingSlipEdited(true);
+                    }}
+                    onFocus={() => {
+                      // If user focuses on empty field, allow auto-suggestions again
+                      if (!sharedFields.packingSlip) {
+                        setPackingSlipEdited(false);
+                      }
+                    }}
+                    className="h-10 w-full pr-12"
+                    placeholder="Auto-generated or manual"
+                  />
+                  {!packingSlipEdited && sharedFields.packingSlip && (
+                    <div className="absolute right-1 top-1/2 -translate-y-1/2">
+                      <Badge variant="secondary" className="text-xs px-1 py-0.5">
+                        Auto
+                      </Badge>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Damage Status Field - Mínimo */}
+              <div className="flex flex-col space-y-2 lg:w-[18%] min-w-0">
+                <Label className="text-sm font-medium text-slate-700">Damage Status</Label>
+                <div className="flex items-center h-10 px-3 border rounded-md bg-white w-full">
+                  <input 
+                    id="shared-damaged"
+                    type="checkbox"
+                    checked={sharedFields.isDamaged}
+                    onChange={(e) => setSharedFields(prev => ({ ...prev, isDamaged: e.target.checked }))}
+                    className="rounded mr-2"
+                  />
+                  <Label htmlFor="shared-damaged" className="text-sm cursor-pointer truncate">Items damaged</Label>
+                </div>
               </div>
             </div>
           </div>
@@ -1206,15 +1126,15 @@ export default function Receiving({ vendors, skus, layersBySku, movements, onUpd
           </div>
 
           {/* Multi-SKU Table */}
-          <div className="space-y-3">
-            <div className="flex items-center justify-between">
-              <Label className="text-sm font-medium">Receiving Items</Label>
+          <div className="space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <Label className="text-sm font-medium text-slate-700">Receiving Items</Label>
               <Button 
                 type="button" 
                 variant="outline" 
                 size="sm" 
                 onClick={addReceivingLine}
-                className="text-green-600 border-green-200 hover:bg-green-50"
+                className="text-green-600 border-green-200 hover:bg-green-50 self-start sm:self-auto"
               >
                 <Plus className="h-4 w-4 mr-1" />
                 Add Item
@@ -1222,25 +1142,28 @@ export default function Receiving({ vendors, skus, layersBySku, movements, onUpd
             </div>
 
             <div className="border rounded-lg overflow-hidden">
-              <Table>
-                <TableHeader>
-                  <TableRow className="bg-slate-50">
-                    <TableHead className="w-[200px]">SKU</TableHead>
-                    <TableHead className="w-[120px]">Quantity</TableHead>
-                    <TableHead className="w-[120px]">Unit Cost</TableHead>
-                    <TableHead className="w-[200px]">Notes</TableHead>
-                    <TableHead className="w-[100px]">Actions</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
+              {/* Single Grid Container for Header and Body */}
+              <div className="w-full">
+                {/* Combined Header and Body Grid */}
+                <div style={{display: 'grid', gridTemplateColumns: '2fr 1fr 1fr 2fr 0.5fr', gap: '12px'}}>
+                  {/* Header Row */}
+                  <div className="bg-slate-50 border-b px-4 py-3 text-sm font-medium text-slate-700">SKU</div>
+                  <div className="bg-slate-50 border-b px-4 py-3 text-sm font-medium text-slate-700">Quantity</div>
+                  <div className="bg-slate-50 border-b px-4 py-3 text-sm font-medium text-slate-700">Unit Cost</div>
+                  <div className="bg-slate-50 border-b px-4 py-3 text-sm font-medium text-slate-700">Notes</div>
+                  <div className="bg-slate-50 border-b px-4 py-3 text-sm font-medium text-slate-700 text-center">Actions</div>
+                  
+                  {/* Data Rows */}
                   {receivingLines.map((line, index) => {
                     const lineErrors = Object.keys(errors).filter(key => 
                       key.startsWith(`line-${line.id}`)
                     );
+                    const hasErrors = lineErrors.length > 0;
                     
                     return (
-                      <TableRow key={line.id} className={lineErrors.length > 0 ? "bg-red-50" : ""}>
-                        <TableCell>
+                      <React.Fragment key={line.id}>
+                        {/* SKU Column */}
+                        <div className={`px-4 py-3 min-h-[60px] ${hasErrors ? "bg-red-50" : ""} ${index > 0 ? "border-t" : ""}`}>
                           <div className="space-y-1">
                             <SKUSelect 
                               id={`sku-${line.id}`}
@@ -1251,17 +1174,18 @@ export default function Receiving({ vendors, skus, layersBySku, movements, onUpd
                               error={errors[`line-${line.id}-sku`]}
                             />
                             {errors[`line-${line.id}-sku`] && (
-                              <ErrorMessage 
-                                message={errors[`line-${line.id}-sku`]} 
-                                id={`sku-${line.id}-error`} 
-                              />
+                              <div className="text-xs text-red-600 flex items-start gap-1 min-h-[16px] leading-tight">
+                                <AlertTriangle className="h-3 w-3 shrink-0 mt-0.5" />
+                                <span className="break-words">{errors[`line-${line.id}-sku`]}</span>
+                              </div>
                             )}
                           </div>
-                        </TableCell>
+                        </div>
                         
-                        <TableCell>
+                        {/* Quantity Column */}
+                        <div className={`px-4 py-3 min-h-[60px] ${hasErrors ? "bg-red-50" : ""} ${index > 0 ? "border-t" : ""}`}>
                           <div className="space-y-1">
-                            <div className="flex items-center gap-2">
+                            <div className="flex items-center gap-1">
                               <Input 
                                 id={`qty-${line.id}`}
                                 type="number"
@@ -1272,23 +1196,24 @@ export default function Receiving({ vendors, skus, layersBySku, movements, onUpd
                                   const n = Number.isNaN(parseFloat(e.target.value)) ? 0 : parseFloat(e.target.value);
                                   updateReceivingLine(line.id, { qty: Math.max(0, n) });
                                 }}
-                                className={`h-9 ${errors[`line-${line.id}-qty`] ? 'border-red-500' : ''}`}
+                                className={`h-9 flex-1 ${errors[`line-${line.id}-qty`] ? 'border-red-500' : ''}`}
                                 placeholder="0"
                               />
-                              <span className="text-xs text-slate-500 min-w-[40px]">
+                              <span className="text-xs text-slate-500 min-w-[24px] text-center">
                                 {line.skuId ? skus.find(s => s.id === line.skuId)?.unit || '' : ''}
                               </span>
                             </div>
                             {errors[`line-${line.id}-qty`] && (
-                              <ErrorMessage 
-                                message={errors[`line-${line.id}-qty`]} 
-                                id={`qty-${line.id}-error`} 
-                              />
+                              <div className="text-xs text-red-600 flex items-start gap-1 min-h-[16px] leading-tight">
+                                <AlertTriangle className="h-3 w-3 shrink-0 mt-0.5" />
+                                <span className="break-words">{errors[`line-${line.id}-qty`]}</span>
+                              </div>
                             )}
                           </div>
-                        </TableCell>
+                        </div>
                         
-                        <TableCell>
+                        {/* Unit Cost Column */}
+                        <div className={`px-4 py-3 min-h-[60px] ${hasErrors ? "bg-red-50" : ""} ${index > 0 ? "border-t" : ""}`}>
                           <div className="space-y-1">
                             <CurrencyInput 
                               id={`cost-${line.id}`}
@@ -1296,43 +1221,46 @@ export default function Receiving({ vendors, skus, layersBySku, movements, onUpd
                               onChange={(value) => updateReceivingLine(line.id, { unitCost: value })}
                               error={errors[`line-${line.id}-cost`]}
                               placeholder="$0.00"
-                              className="h-9"
                             />
                             {errors[`line-${line.id}-cost`] && (
-                              <ErrorMessage 
-                                message={errors[`line-${line.id}-cost`]} 
-                                id={`cost-${line.id}-error`} 
-                              />
+                              <div className="text-xs text-red-600 flex items-start gap-1 min-h-[16px] leading-tight">
+                                <AlertTriangle className="h-3 w-3 shrink-0 mt-0.5" />
+                                <span className="break-words">{errors[`line-${line.id}-cost`]}</span>
+                              </div>
                             )}
                           </div>
-                        </TableCell>
+                        </div>
                         
-                        <TableCell>
-                          <Input 
-                            value={line.notes}
-                            onChange={(e) => updateReceivingLine(line.id, { notes: e.target.value })}
-                            placeholder="Item-specific notes"
-                            className="h-9"
-                          />
-                        </TableCell>
+                        {/* Notes Column */}
+                        <div className={`px-4 py-3 min-h-[60px] ${hasErrors ? "bg-red-50" : ""} ${index > 0 ? "border-t" : ""}`}>
+                          <div className="h-9 flex items-center">
+                            <Input 
+                              value={line.notes}
+                              onChange={(e) => updateReceivingLine(line.id, { notes: e.target.value })}
+                              placeholder="Optional notes"
+                              className="h-9 w-full"
+                            />
+                          </div>
+                        </div>
                         
-                        <TableCell>
+                        {/* Actions Column */}
+                        <div className={`px-4 py-3 min-h-[60px] ${hasErrors ? "bg-red-50" : ""} ${index > 0 ? "border-t" : ""} flex justify-center items-start pt-6`}>
                           <Button 
                             type="button"
                             variant="outline"
                             size="sm"
                             onClick={() => removeReceivingLine(line.id)}
                             disabled={receivingLines.length <= 1}
-                            className="text-red-600 border-red-200 hover:bg-red-50"
+                            className="text-red-600 border-red-200 hover:bg-red-50 h-9 w-9 p-0"
                           >
                             <Minus className="h-4 w-4" />
                           </Button>
-                        </TableCell>
-                      </TableRow>
+                        </div>
+                      </React.Fragment>
                     );
                   })}
-                </TableBody>
-              </Table>
+                </div>
+              </div>
             </div>
 
             {/* Processing Summary */}
