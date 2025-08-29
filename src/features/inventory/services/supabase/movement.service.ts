@@ -260,6 +260,81 @@ export async function createIssueMovement(params: {
 }
 
 /**
+ * Create DAMAGE movement (similar to WASTE but with different semantic context)
+ */
+export async function createDamageMovement(params: {
+  skuId: string;
+  quantity: number;
+  unitCost?: number;
+  date: Date;
+  reference?: string;
+  notes?: string;
+  generalNotes?: string;
+  damageNotes?: string;
+}): Promise<{ movement: MovementWithDetails; totalCost: number }> {
+  try {
+    // Get SKU to use last cost or default cost
+    const { data: sku, error: skuError } = await supabase
+      .from('skus')
+      .select('last_cost, average_cost')
+      .eq('id', params.skuId)
+      .single();
+      
+    if (skuError) throw skuError;
+    
+    // Use provided unit cost, or fall back to last_cost, then average_cost, then 0
+    const unitCost = params.unitCost || sku.last_cost || sku.average_cost || 0;
+    const totalCost = params.quantity * unitCost;
+
+    try {
+      // Combine all notes into a single notes field
+      const allNotes = [params.generalNotes, params.damageNotes, params.notes]
+        .filter(note => note?.trim())
+        .join(' | ');
+
+      // Create movement record - DAMAGE doesn't consume inventory, just tracks rejected items
+      const movementData: MovementInsert = {
+        type: 'DAMAGE',
+        sku_id: params.skuId,
+        quantity: -params.quantity, // Negative for damage
+        unit_cost: unitCost,
+        total_value: -totalCost, // Negative value
+        datetime: params.date.toISOString(),
+        reference: params.reference || `DMG-${Date.now()}`,
+        notes: allNotes || null,
+      };
+
+      const { data: movement, error: movementError } = await supabase
+        .from('movements')
+        .insert(movementData)
+        .select(`
+          *,
+          skus (id, description, unit),
+          vendors (name)
+        `)
+        .single();
+
+      if (movementError) throw movementError;
+
+      // NO FIFO CONSUMPTION for DAMAGE - these items were never added to inventory
+      // DAMAGE movements just track rejected items during receiving
+
+      return {
+        movement: mapMovementRowToUI(movement),
+        totalCost: totalCost,
+      };
+
+    } catch (error) {
+      console.error('Error within createDamageMovement flow:', error);
+      throw error;
+    }
+  } catch (error) {
+    console.error('Error creating damage movement:', error);
+    throw error;
+  }
+}
+
+/**
  * Create WASTE movement with FIFO consumption
  */
 export async function createWasteMovement(params: {

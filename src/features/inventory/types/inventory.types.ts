@@ -101,6 +101,7 @@ export enum MaterialType {
 
 export enum MovementType {
   ADJUSTMENT = 'ADJUSTMENT',
+  DAMAGE = 'DAMAGE',
   ISSUE = 'ISSUE',
   PRODUCE = 'PRODUCE',
   RECEIVE = 'RECEIVE',
@@ -418,13 +419,14 @@ export interface MovementLogEntry {
   // Restrict to the subset used in the wireframe
   type: Extract<
     MovementType,
-    MovementType.RECEIVE | MovementType.ISSUE | MovementType.WASTE | MovementType.PRODUCE
+    MovementType.RECEIVE | MovementType.ISSUE | MovementType.WASTE | MovementType.PRODUCE | MovementType.DAMAGE
   >;
   skuOrName: string; // SKU code or product name
   skuId: string; // SKU ID for calculations (added for adaptive granularity)
-  qty: number; // negative for ISSUE/WASTE
+  qty: number; // negative for ISSUE/WASTE/DAMAGE
   value: number; // absolute value in currency units
   ref: string; // reference (e.g., WO number)
+  notes?: string; // notes from backend
 }
 
 // Time range presets used in dashboard helpers

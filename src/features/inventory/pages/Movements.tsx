@@ -75,6 +75,19 @@ function SimpleDeleteButton({
 // Period types matching Dashboard pattern
 type PeriodOption = 'today' | 'last7' | 'month' | 'quarter' | 'custom';
 
+// Receiving tooltip interface
+interface ReceivingTooltip {
+  packingSlip: string;
+  totalReceived: number;
+  totalDamaged: number;
+  effectiveQty: number;
+  totalValue: number;
+  damageRate: number;
+  datetime: string;
+  generalNotes?: string;
+  damageNotes?: string;
+}
+
 // Time range helper functions (from Dashboard pattern)
 const ONE_DAY = 24 * 60 * 60 * 1000;
 function getRange(period: PeriodOption, customStart?: string, customEnd?: string) {
@@ -98,6 +111,9 @@ export default function Movements({ movements = [], onDeleteMovement, onExportEx
   const [typeFilter, setTypeFilter] = useState('');
   const [period, setPeriod] = useState<PeriodOption>('last7');
   const [customStart, setCustomStart] = useState<string>('');
+  const [hoveredReceiving, setHoveredReceiving] = useState<string | null>(null);
+  const [tooltipPosition, setTooltipPosition] = useState({ x: 0, y: 0 });
+  const hoverTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const [customEnd, setCustomEnd] = useState<string>('');
   const [confirmDelete, setConfirmDelete] = useState<MovementId | null>(null);
   const [confirmationAnimal, setConfirmationAnimal] = useState<string | null>(null);
@@ -254,6 +270,9 @@ export default function Movements({ movements = [], onDeleteMovement, onExportEx
   const filteredMovements = useMemo(() => {
     const result: Array<[MovementLogEntry, number]> = [];
     (movements || []).forEach((movement, originalIndex) => {
+      // Exclude DAMAGE movements from main display (they're for tracking only)
+      if (movement.type === MovementType.DAMAGE) return;
+      
       // SKU/Name filter
       if (deferredSku && !movement.skuOrName.toLowerCase().includes(deferredSku.toLowerCase())) return;
       
@@ -318,10 +337,116 @@ export default function Movements({ movements = [], onDeleteMovement, onExportEx
     return { newMovements, alreadyExported };
   }, [filteredMovements, getExportedMovements]);
 
+  // Group receiving movements for tooltips (including DAMAGE for calculation)
+  const receivingTooltips = useMemo(() => {
+    const tooltips = new Map<string, ReceivingTooltip>();
+    
+    // Use all movements (including DAMAGE) for tooltip calculation
+    (movements || []).forEach((m) => {
+      // Apply same filters as main display but include DAMAGE
+      if (deferredSku && !m.skuOrName.toLowerCase().includes(deferredSku.toLowerCase())) return;
+      if (deferredWo && !m.ref.toLowerCase().includes(deferredWo.toLowerCase())) return;
+      if (typeFilter && m.type !== typeFilter && m.type !== MovementType.DAMAGE) return; // Allow DAMAGE through even with type filter
+      
+      const movementTime = m.datetime instanceof Date ? m.datetime.getTime() : new Date(m.datetime).getTime();
+      if (movementTime < rangeStart || movementTime > rangeEnd) return;
+      
+      // Only process RECEIVE and DAMAGE for tooltips
+      if (m.type !== MovementType.RECEIVE && m.type !== MovementType.DAMAGE) return;
+      if (!m.ref) return;
+      
+      // Extract base reference (remove suffixes like -REJECTED)
+      const baseRef = m.ref.replace(/-REJECTED$/, '').replace(/-DAMAGE$/, '');
+      
+      if (!tooltips.has(baseRef)) {
+        tooltips.set(baseRef, {
+          packingSlip: baseRef,
+          totalReceived: 0,
+          totalDamaged: 0,
+          effectiveQty: 0,
+          totalValue: 0,
+          damageRate: 0,
+          datetime: m.datetime instanceof Date ? m.datetime.toISOString() : m.datetime,
+          generalNotes: undefined,
+          damageNotes: undefined
+        });
+      }
+      
+      const tooltip = tooltips.get(baseRef)!;
+      
+      if (m.qty > 0) {
+        // Main receiving movement
+        tooltip.totalReceived += m.qty;
+        tooltip.totalValue += m.value;
+        // Extract general notes from RECEIVE movement
+        if (m.notes && !tooltip.generalNotes) {
+          tooltip.generalNotes = m.notes;
+        }
+      } else {
+        // Damage/rejection movement (negative quantity)
+        tooltip.totalDamaged += Math.abs(m.qty);
+        // Extract damage-specific notes from DAMAGE movement
+        if (m.notes && !tooltip.damageNotes) {
+          tooltip.damageNotes = m.notes;
+        }
+        // Also use as general notes if none set yet
+        if (m.notes && !tooltip.generalNotes) {
+          tooltip.generalNotes = m.notes;
+        }
+      }
+      
+      tooltip.effectiveQty = tooltip.totalReceived - tooltip.totalDamaged;
+      tooltip.damageRate = tooltip.totalReceived > 0 
+        ? (tooltip.totalDamaged / tooltip.totalReceived) * 100 
+        : 0;
+    });
+    
+    return tooltips;
+  }, [movements, deferredSku, deferredWo, typeFilter, rangeStart, rangeEnd]);
+  
+  // Handle tooltip mouse events with delay to prevent flicker
+  const handleReceivingMouseEnter = (event: React.MouseEvent, ref: string) => {
+    // Clear any existing timeout
+    if (hoverTimeoutRef.current) {
+      clearTimeout(hoverTimeoutRef.current);
+    }
+    
+    const rect = event.currentTarget.getBoundingClientRect();
+    const viewportWidth = window.innerWidth;
+    const tooltipWidth = 320; // Approximate tooltip width
+    
+    // Position tooltip to the left if it would overflow right side
+    const xPosition = rect.right + 15 + tooltipWidth > viewportWidth 
+      ? rect.left - tooltipWidth - 15 
+      : rect.right + 15;
+    
+    setTooltipPosition({
+      x: Math.max(10, xPosition), // Ensure it doesn't go off left edge
+      y: rect.top + window.scrollY
+    });
+    setHoveredReceiving(ref);
+  };
+  
+  const handleReceivingMouseLeave = () => {
+    // Add small delay before hiding to prevent flicker
+    hoverTimeoutRef.current = setTimeout(() => {
+      setHoveredReceiving(null);
+    }, 100);
+  };
+
   // Reset to first page when filters change
   useEffect(() => {
     setPage(1);
   }, [deferredSku, deferredWo, typeFilter, period, customStart, customEnd]);
+
+  // Cleanup timeout on unmount
+  useEffect(() => {
+    return () => {
+      if (hoverTimeoutRef.current) {
+        clearTimeout(hoverTimeoutRef.current);
+      }
+    };
+  }, []);
 
   // 🚀 REAL-TIME SUBSCRIPTIONS: Listen to Supabase changes on movements table
   useEffect(() => {
@@ -589,15 +714,23 @@ export default function Movements({ movements = [], onDeleteMovement, onExportEx
                         const [m, originalIndex] = pagedMovements[vi.index]!;
                         const stableKey = `${m.ref}|${m.datetime}|${m.type}|${m.skuOrName}`;
                         return (
-                          <TableRow key={stableKey} data-index={vi.index}>
+                          <TableRow 
+                            key={stableKey} 
+                            data-index={vi.index}
+                            {...(m.type === MovementType.RECEIVE && m.ref ? {
+                              onMouseEnter: (e) => handleReceivingMouseEnter(e, m.ref!),
+                              onMouseLeave: handleReceivingMouseLeave,
+                              className: 'cursor-help hover:bg-slate-50'
+                            } : {})}
+                          >
                             {/** First cell as row header for screen readers */}
                             <th scope="row" className="px-4 py-2 text-left font-normal">
                               {dateTimeFmt.format(m.datetime instanceof Date ? m.datetime : new Date(m.datetime))}
                             </th>
                             <TableCell>
                               <Badge variant={getMovementBadgeVariant(m.type)}>
-                            {m.type === MovementType.PRODUCE ? 'COGS' : m.type === MovementType.ISSUE ? 'MATERIAL USAGE' : m.type}
-                          </Badge>
+                                {m.type === MovementType.PRODUCE ? 'COGS' : m.type === MovementType.ISSUE ? 'MATERIAL USAGE' : m.type}
+                              </Badge>
                             </TableCell>
                             <TableCell>{m.skuOrName}</TableCell>
                             <TableCell>
@@ -831,6 +964,101 @@ export default function Movements({ movements = [], onDeleteMovement, onExportEx
           }
         }}
       />
+      
+      {/* Receiving Tooltip */}
+      {hoveredReceiving && receivingTooltips.has(hoveredReceiving) && (
+        <div 
+          className="fixed z-50 bg-white border border-gray-200 rounded-lg shadow-xl p-4 w-80 pointer-events-none"
+          style={{
+            left: tooltipPosition.x,
+            top: tooltipPosition.y,
+            transform: 'translateY(-50%)'
+          }}
+        >
+          {(() => {
+            const tooltip = receivingTooltips.get(hoveredReceiving)!;
+            const currencyFmt = new Intl.NumberFormat('en-US', {
+              style: 'currency',
+              currency: 'USD'
+            });
+            const dateFmt = new Intl.DateTimeFormat('en-US', {
+              year: 'numeric',
+              month: '2-digit',
+              day: '2-digit',
+              hour: '2-digit',
+              minute: '2-digit',
+              hour12: false
+            });
+            
+            return (
+              <div className="space-y-2">
+                <div className="font-semibold text-gray-900 flex items-center gap-2">
+                  <span>📦</span>
+                  Receiving: {tooltip.packingSlip}
+                </div>
+                
+                <div className="border-t border-gray-200 pt-2 space-y-1.5 text-sm">
+                  <div className="flex items-center gap-2 text-gray-600">
+                    <span>📅</span>
+                    {dateFmt.format(new Date(tooltip.datetime))}
+                  </div>
+                  
+                  <div className="flex items-center gap-2 text-gray-700">
+                    <span>📊</span>
+                    <span>
+                      Received: <strong>{tooltip.totalReceived}</strong> units
+                      {tooltip.totalDamaged > 0 && (
+                        <span className="text-red-600"> → {tooltip.effectiveQty} units</span>
+                      )}
+                    </span>
+                  </div>
+                  
+                  <div className="flex items-center gap-2 text-gray-700">
+                    <span>💰</span>
+                    Value: <strong>{currencyFmt.format(tooltip.totalValue)}</strong>
+                  </div>
+                  
+                  {tooltip.totalDamaged > 0 && (
+                    <div className="flex items-center gap-2 text-red-600">
+                      <span>⚠️</span>
+                      Damage: <strong>{tooltip.totalDamaged}</strong> units ({tooltip.damageRate.toFixed(1)}%)
+                    </div>
+                  )}
+                  
+                  {(tooltip.generalNotes || tooltip.damageNotes) && (
+                    <div className="border-t border-gray-200 pt-2 mt-2 space-y-2">
+                      {tooltip.generalNotes && (
+                        <div className="flex items-start gap-2 text-gray-600">
+                          <span className="mt-0.5">📝</span>
+                          <div>
+                            <div className="font-medium text-xs text-gray-500 uppercase tracking-wide">General Notes:</div>
+                            <div className="text-sm text-gray-700 whitespace-pre-wrap break-words">
+                              {tooltip.generalNotes}
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                      
+                      {tooltip.damageNotes && (
+                        <div className="flex items-start gap-2 text-red-600">
+                          <span className="mt-0.5">⚠️</span>
+                          <div>
+                            <div className="font-medium text-xs text-red-500 uppercase tracking-wide">Damage Notes:</div>
+                            <div className="text-sm text-red-700 whitespace-pre-wrap break-words">
+                              {tooltip.damageNotes}
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
+            );
+          })()
+          }
+        </div>
+      )}
     </div>
   );
 }

@@ -1032,6 +1032,7 @@ export default function InventoryWireframe() {
          qty: m.quantity,
          value: m.totalCost,
          ref: m.reference || '',
+         notes: m.notes, // Include notes from backend
        }));
        setMovementLog(mapped);
        toast.success(`Refreshed ${mapped.length} movements`);
@@ -1169,125 +1170,181 @@ export default function InventoryWireframe() {
     return typeof v === 'number' ? v : fifoAvgCost(layersBySku[skuId]);
   };
 
-  const { bins, periodLabels, granularity, inventoryValues, cogsValues } = useMemo(() => {
-    const [s, e] = getRange(period, customStart, customEnd);
-    const bins = buildAdaptiveBins(period, s, e);
-    const granularity = getGranularity(period, s, e);
+  const kpiData = useMemo(() => {
+    const [rangeStart, rangeEnd] = getRange(period, customStart, customEnd);
+    const bins = buildAdaptiveBins(period, rangeStart, rangeEnd);
     
-    // Option A (fallback simplificado): Calcular com saldo de abertura e carry-forward
-    // TODO: Option B (FIFO por movimento) - usar custos históricos reais por movimento
+    // =====================================================================
+    // INVENTORY VALUATION METHODOLOGY
+    // =====================================================================
+    // This KPI calculation uses a retroactive approach to ensure financial
+    // accuracy and consistency with current inventory values.
+    // 
+    // Key Principles:
+    // 1. Current Value Anchor: Last data point equals actual inventory value
+    // 2. Historical Reconstruction: Past values calculated by subtracting
+    //    future net movements from current value
+    // 3. FIFO Costing: All valuations use First-In-First-Out cost layers
+    // 4. Movement Types: RECEIVE (+) and ISSUE (-) affect inventory value
+    // 
+    // This approach eliminates cumulative calculation errors and provides
+    // auditable, consistent inventory valuations for financial analysis.
+    // =====================================================================
     
-    // 1. Calcular SALDO DE ABERTURA por SKU no início do período
-    const openingQtyBySku: Record<string, number> = {};
-    
-    // Obter estoque atual e subtrair movements dentro do período
-    skus.forEach(sku => {
-      const currentQty = sku.onHand ?? 0;
+    // 1) Total Inventory (qty & value) — current snapshot
+    const inv = skus.reduce((acc, s) => {
+      const qty = Math.max(0, s.onHand ?? 0);
+      const avg = (avgCostFor(s.id) ?? 0);
+      acc.qty += qty;
+      acc.value += qty * avg;
+      return acc;
+    }, { qty: 0, value: 0 });
+
+    // Movement deltas for historical inventory calculation (RECEIVE vs ISSUE)
+    const deltas = movementLog.map(m => {
+      const ts = +parseStamp(m.datetime);
+      const v = Math.abs(m.value || 0);
+      let delta = 0;
+      if (m.type === 'RECEIVE') delta = v;
+      if (m.type === 'ISSUE') delta = -v;
+      return { ts, delta };
+    }).filter(d => d.delta !== 0); // Keep only relevant movements
+
+    const nowInvValue = inv.value;
+
+    // Build inventory series using retroactive calculation for financial accuracy
+    // This ensures the last data point always equals the current inventory value
+    // and each historical point represents the actual inventory value at that time
+    const inventorySeries = bins.map((currentBin, currentIndex) => {
+      // Last bin always equals current inventory value for consistency
+      if (currentIndex === bins.length - 1) {
+        return nowInvValue;
+      }
       
-      // Calcular movements líquidos dentro do período selecionado
-      const netMovementsInPeriod = movementLog
-        .filter(m => {
-          const ts = parseStamp(m.datetime).getTime();
-          return ts >= s && ts <= e && m.skuId === sku.id;
-        })
-        .reduce((net, m) => {
-          if (m.type === 'RECEIVE' || m.type === 'PRODUCE') {
-            return net + m.qty;
-          } else if (m.type === 'ISSUE' || m.type === 'WASTE') {
-            return net - m.qty;
-          }
-          return net;
-        }, 0);
+      // For historical periods: Current value - Net movements from future periods
+      // This approach eliminates cumulative calculation errors and ensures accuracy
+      let futureMovementsNet = 0;
       
-      // Saldo de abertura = Estoque atual - movements líquidos do período
-      openingQtyBySku[sku.id] = Math.max(0, currentQty - netMovementsInPeriod);
-    });
-    
-    // 2. Loop sequencial sobre bins acumulando estoque por SKU (carry-forward)
-    const inventoryValues: number[] = [];
-    const stockCarryForward: Record<string, number> = { ...openingQtyBySku };
-    
-    bins.forEach(([binStart, binEnd]) => {
-      // Aplicar movements do bin atual
-      movementLog
-        .filter(m => {
-          const ts = parseStamp(m.datetime).getTime();
-          return ts >= binStart && ts < binEnd;
-        })
-        .forEach(m => {
-          if (!stockCarryForward[m.skuId]) stockCarryForward[m.skuId] = 0;
+      // Sum all movements that occurred AFTER the current bin
+      for (let futureIndex = currentIndex + 1; futureIndex < bins.length; futureIndex++) {
+        const [futureStart, futureEnd] = bins[futureIndex];
+        
+        // Calculate net movement value for this future period
+        const periodNet = deltas
+          .filter(d => d.ts >= futureStart && d.ts < futureEnd)
+          .reduce((sum, d) => sum + d.delta, 0);
           
-          if (m.type === 'RECEIVE' || m.type === 'PRODUCE') {
-            stockCarryForward[m.skuId] += m.qty;
-          } else if (m.type === 'ISSUE' || m.type === 'WASTE') {
-            stockCarryForward[m.skuId] -= m.qty;
-          }
-          
-          // Não permitir estoque negativo
-          stockCarryForward[m.skuId] = Math.max(0, stockCarryForward[m.skuId]);
-        });
+        futureMovementsNet += periodNet;
+      }
       
-      // Calcular valor total do estoque ao final do bin
-      let binTotalValue = 0;
-      Object.entries(stockCarryForward).forEach(([skuId, qty]) => {
-        if (qty > 0) {
-          // Cost basis simplificado: usar custo médio atual por SKU (Option A)
-          const avgCost = avgCostFor(skuId);
-          if (avgCost) {
-            binTotalValue += qty * avgCost;
-          }
-        }
-      });
-      
-      inventoryValues.push(binTotalValue);
+      // Historical inventory value = Current value - Future net movements
+      return nowInvValue - futureMovementsNet;
     });
+
+    // Calculate period start value for turnover calculations
+    const invStart = inventorySeries.length > 0 ? inventorySeries[0] : nowInvValue;
+
+    // COGS per bin & total (from COGS movements)
+    const cogsPerBin = bins.map(([s, e]) => movementLog
+      .filter(m => m.type === 'PRODUCE')
+      .reduce((sum, m) => {
+        const ts = +parseStamp(m.datetime);
+        return ts > s && ts <= e ? sum + (m.value || 0) : sum;
+      }, 0));
+    const cogsTotal = cogsPerBin.reduce((a, b) => a + b, 0);
+
+    // Shrinkage per bin & total (from WASTE movements)
+    const shrinkagePerBin = bins.map(([s, e]) => movementLog
+      .filter(m => m.type === 'WASTE')
+      .reduce((sum, m) => {
+        const ts = +parseStamp(m.datetime);
+        return ts > s && ts <= e ? sum + (m.value || 0) : sum;
+      }, 0));
+    const shrinkageTotal = shrinkagePerBin.reduce((a, b) => a + b, 0);
+
+    // Inventory Turnover = COGS / Average Inventory (period)
+    // Using consistent inventory series values for accurate turnover calculation
+    const invEnd = nowInvValue; // Always use current value as end point
+    const avgInvPeriod = Math.max(0, (invStart + invEnd) / 2);
+    const turnoverVal = avgInvPeriod > 0 ? (cogsTotal / avgInvPeriod) : 0;
     
-    // 3. Calcular COGS por bin (aproximação usando custo médio atual)
-    const cogsValues = bins.map(([binStart, binEnd]) => {
-      return movementLog
-        .filter(m => {
-          const movementTime = parseStamp(m.datetime).getTime();
-          return m.type === 'ISSUE' && movementTime >= binStart && movementTime < binEnd;
-        })
-        .reduce((total, m) => {
-          // COGS por bin = Σ (ISSUE movements no bin × custo médio atual do SKU) - fallback
-          const avgCost = avgCostFor(m.skuId);
-          return total + (avgCost ? m.qty * avgCost : 0);
-        }, 0);
+    // Turnover series: COGS per bin / Average inventory in that bin
+    const turnoverSeries = bins.map((_, i) => {
+      const invEnd = inventorySeries[i]; // End inventory for this bin
+      const invStart = i > 0 ? inventorySeries[i - 1] : inventorySeries[0]; // Start inventory
+      const avgBin = Math.max(0, (invStart + invEnd) / 2);
+      return avgBin > 0 ? (cogsPerBin[i] / avgBin) : 0;
     });
+
+    // Days of Inventory = Current Inventory ÷ Daily Consumption (ISSUE + WASTE)
+    const daysInPeriod = Math.max(1, (rangeEnd - rangeStart) / ONE_DAY);
+    const consPerBin = bins.map(([s, e]) => movementLog
+      .filter(m => m.type === 'ISSUE' || m.type === 'WASTE')
+      .reduce((sum, m) => {
+        const ts = +parseStamp(m.datetime);
+        return ts > s && ts <= e ? sum + (m.value || 0) : sum;
+      }, 0));
+    const consTotal = consPerBin.reduce((a, b) => a + b, 0);
+    const dailyCOGS = consTotal / daysInPeriod;
+    const doiVal = dailyCOGS > 0 ? (nowInvValue / dailyCOGS) : Infinity;
     
-    // Gerar labels adaptativos baseados na granularidade
-    const labels = bins.map((bin, i) => {
-      // Última barra sempre é "Now"
-      if (i === bins.length - 1) return "Now";
-      
-      const binEndDate = new Date(bin[1]);
-      const now = new Date();
-      
-      switch(granularity) {
-        case 'hourly': {
-          const hoursAgo = Math.ceil((now.getTime() - bin[1]) / (1000 * 60 * 60));
-          return hoursAgo === 0 ? "Now" : `-${hoursAgo}h`;
-        }
-        case 'daily': {
-          const daysAgo = Math.ceil((now.getTime() - bin[1]) / (1000 * 60 * 60 * 24));
-          return `-${daysAgo}d`;
-        }
-        case 'weekly': {
-          const weeksAgo = Math.ceil((now.getTime() - bin[1]) / (1000 * 60 * 60 * 24 * 7));
-          return `-${weeksAgo}w`;
-        }
-        case 'monthly': {
-          const monthsAgo = Math.ceil((now.getTime() - bin[1]) / (1000 * 60 * 60 * 24 * 30));
-          return `-${monthsAgo}m`;
-        }
-        default:
-          return `P${i + 1}`;
+    let cum = 0;
+    const doiSeriesRaw = bins.map(([, e], i) => {
+      cum += consPerBin[i];
+      const daysSoFar = Math.max((e - rangeStart) / ONE_DAY, 1e-6);
+      const daily = cum / daysSoFar;
+      const invEndBin = inventorySeries[i];
+      return daily > 0 ? (invEndBin / daily) : Infinity;
+    });
+    const doiSeries = doiSeriesRaw.map(v => (Number.isFinite(v) ? v : 0));
+
+    return {
+      inv,
+      inventorySeries,
+      turnoverVal,
+      turnoverSeries,
+      cogsTotal,
+      shrinkageTotal,
+      shrinkageSeries: shrinkagePerBin,
+      doiVal,
+      doiSeries,
+      dailyCOGS,
+      // Extra breakdown fields for UI explanations
+      invStart,
+      invEnd,
+      avgInvPeriod,
+      daysInPeriod,
+      nowInvValue
+    };
+  }, [skus, layersBySku, movementLog, period, customStart, customEnd]);
+
+  // Derived chart data for MetricCard components
+  const { inventoryValues, cogsValues, periodLabels } = useMemo(() => {
+    const [rangeStart, rangeEnd] = getRange(period, customStart, customEnd);
+    const bins = buildAdaptiveBins(period, rangeStart, rangeEnd);
+    
+    const inventoryValues = kpiData.inventorySeries;
+    const cogsValues = bins.map(([s, e]) => movementLog
+      .filter(m => m.type === 'PRODUCE')
+      .reduce((sum, m) => {
+        const ts = +parseStamp(m.datetime);
+        return ts > s && ts <= e ? sum + (m.value || 0) : sum;
+      }, 0));
+    
+    const periodLabels = bins.map(([s, e]) => {
+      const start = new Date(s);
+      const end = new Date(e);
+      if (period === 'today' || period === 'last7days') {
+        return `${start.getMonth() + 1}/${start.getDate()}`;
+      } else if (period === 'month' || period === 'quarter') {
+        return `${start.getMonth() + 1}/${start.getDate()}`;
+      } else {
+        return `${start.getMonth() + 1}/${start.getDate()}`;
       }
     });
     
-    return { bins, periodLabels: labels, granularity, inventoryValues, cogsValues };
-  }, [period, customStart, customEnd, movementLog, avgCostMap, layersBySku, skus]);
+    return { inventoryValues, cogsValues, periodLabels };
+  }, [kpiData.inventorySeries, movementLog, period, customStart, customEnd]);
 
   // INV-02 & INV-03: Excel export functions
   const exportToExcel = async (redFlagsOnly = false) => {
@@ -1691,103 +1748,6 @@ export default function InventoryWireframe() {
     </div>
   );
 
-  // Real KPI calculations based on movements (KPI-03/04/05)
-  const kpiData = useMemo(() => {
-    const [rangeStart, rangeEnd] = getRange(period, customStart, customEnd);
-    
-    // 1) Total Inventory (qty & value) — current snapshot
-    const inv = skus.reduce((acc, s) => {
-      const qty = Math.max(0, s.onHand ?? 0);
-      const avg = (avgCostFor(s.id) ?? 0);
-      acc.qty += qty;
-      acc.value += qty * avg;
-      return acc;
-    }, { qty: 0, value: 0 });
-
-    // Movement deltas for historical inventory calculation
-    const deltas = movementLog.map(m => {
-      const ts = +parseStamp(m.datetime);
-      const v = Math.abs(m.value || 0);
-      const delta = m.type === 'RECEIVE' ? +v : (m.type === 'ISSUE' || m.type === 'WASTE' ? -v : 0);
-      return { ts, delta };
-    });
-    
-    const nowInvValue = inv.value;
-    const invAt = (ts: number) => nowInvValue - deltas.reduce((s, d) => (d.ts > ts ? s + d.delta : s), 0);
-
-    // Inventory series (value) at end of each bin
-    const inventorySeries = bins.map(([_, e]) => invAt(e));
-
-    // COGS per bin & total (from COGS movements)
-    const cogsPerBin = bins.map(([s, e]) => movementLog
-      .filter(m => m.type === 'PRODUCE')
-      .reduce((sum, m) => {
-        const ts = +parseStamp(m.datetime);
-        return ts > s && ts <= e ? sum + (m.value || 0) : sum;
-      }, 0));
-    const cogsTotal = cogsPerBin.reduce((a, b) => a + b, 0);
-
-    // Shrinkage per bin & total (from WASTE movements)
-    const shrinkagePerBin = bins.map(([s, e]) => movementLog
-      .filter(m => m.type === 'WASTE')
-      .reduce((sum, m) => {
-        const ts = +parseStamp(m.datetime);
-        return ts > s && ts <= e ? sum + (m.value || 0) : sum;
-      }, 0));
-    const shrinkageTotal = shrinkagePerBin.reduce((a, b) => a + b, 0);
-
-    // Inventory Turnover = COGS / Average Inventory (period)
-    const invStart = invAt(rangeStart);
-    const invEnd = invAt(rangeEnd);
-    const avgInvPeriod = Math.max(0, (invStart + invEnd) / 2);
-    const turnoverVal = avgInvPeriod > 0 ? (cogsTotal / avgInvPeriod) : 0;
-    const turnoverSeries = bins.map(([s, e], i) => {
-      const invS = invAt(s), invE = invAt(e);
-      const avgBin = Math.max(0, (invS + invE) / 2);
-      return avgBin > 0 ? (cogsPerBin[i] / avgBin) : 0;
-    });
-
-    // Days of Inventory = Current Inventory ÷ Daily Consumption (ISSUE + WASTE)
-    const daysInPeriod = Math.max(1, (rangeEnd - rangeStart) / ONE_DAY);
-    const consPerBin = bins.map(([s, e]) => movementLog
-      .filter(m => m.type === 'ISSUE' || m.type === 'WASTE')
-      .reduce((sum, m) => {
-        const ts = +parseStamp(m.datetime);
-        return ts > s && ts <= e ? sum + (m.value || 0) : sum;
-      }, 0));
-    const consTotal = consPerBin.reduce((a, b) => a + b, 0);
-    const dailyCOGS = consTotal / daysInPeriod;
-    const doiVal = dailyCOGS > 0 ? (nowInvValue / dailyCOGS) : Infinity;
-    
-    let cum = 0;
-    const doiSeriesRaw = bins.map(([, e], i) => {
-      cum += consPerBin[i];
-      const daysSoFar = Math.max((e - rangeStart) / ONE_DAY, 1e-6);
-      const daily = cum / daysSoFar;
-      const invEndBin = invAt(e);
-      return daily > 0 ? (invEndBin / daily) : Infinity;
-    });
-    const doiSeries = doiSeriesRaw.map(v => (Number.isFinite(v) ? v : 0));
-
-    return {
-      inv,
-      inventorySeries,
-      turnoverVal,
-      turnoverSeries,
-      cogsTotal,
-      shrinkageTotal,
-      shrinkageSeries: shrinkagePerBin,
-      doiVal,
-      doiSeries,
-      dailyCOGS,
-      // Extra breakdown fields for UI explanations
-      invStart,
-      invEnd,
-      avgInvPeriod,
-      daysInPeriod,
-      nowInvValue
-    };
-  }, [skus, layersBySku, movementLog, bins, period, customStart, customEnd]);
 
   return (
     <div className="min-h-screen w-full bg-white text-slate-900">
@@ -1797,7 +1757,7 @@ export default function InventoryWireframe() {
             <div className="h-9 w-9 rounded-xl bg-slate-900 text-white grid place-items-center">PG</div>
             <div>
               <p className="text-sm text-slate-500 leading-none">Premier Gaskets</p>
-              <h1 className="text-base font-semibold">Inventory — Dashboard (Preview)</h1>
+              <h1 className="text-base font-semibold">Inventory System</h1>
             </div>
           </div>
           <div className="flex items-center gap-3">
@@ -1923,9 +1883,9 @@ export default function InventoryWireframe() {
                   />
                   <MetricCard
                     title="Shrinkage"
-                    primary={fmtMoney(kpiData.shrinkageTotal)}
+                    primary={fmtMoney(Math.abs(kpiData.shrinkageTotal))}
                     secondary="Total value of waste in period"
-                    series={kpiData.shrinkageSeries}
+                    series={kpiData.shrinkageSeries.map(v => Math.abs(v))}
                     chartType="bars"
                     valueFormatter={fmtMoney}
                     labels={periodLabels}
@@ -2162,6 +2122,7 @@ export default function InventoryWireframe() {
                   // Use optimized incremental update instead of direct state change
                   addMovementOptimistically(movement);
                 }}
+                onRefreshMovements={loadMovements}
               />
             </Suspense>
           </div>

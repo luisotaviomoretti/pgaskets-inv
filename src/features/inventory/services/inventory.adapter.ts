@@ -169,6 +169,19 @@ export const movementOperations = {
     return await MovementService.createWasteMovement(params);
   },
 
+  async createDamageMovement(params: {
+    skuId: string;
+    quantity: number;
+    unitCost?: number;
+    date: Date;
+    reference?: string;
+    notes?: string;
+    generalNotes?: string;
+    damageNotes?: string;
+  }) {
+    return await MovementService.createDamageMovement(params);
+  },
+
   async createProduceMovement(params: {
     skuId?: string;
     productName?: string;

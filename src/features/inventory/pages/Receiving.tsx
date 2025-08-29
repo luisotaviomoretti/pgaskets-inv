@@ -44,7 +44,7 @@ import {
   VendorSuggestion as Vendor,
   toVendorId,
 } from '@/features/inventory/types/inventory.types';
-import { processReceiving, getFIFOLayers } from '@/features/inventory/services/inventory.adapter';
+import { processReceiving, getFIFOLayers, movementOperations } from '@/features/inventory/services/inventory.adapter';
 import { 
   formatUSD, 
   parseUSDInput, 
@@ -65,13 +65,26 @@ import { telemetry } from '@/features/inventory/services/telemetry';
 // Types for Receiving
 type DamageScope = 'NONE' | 'PARTIAL' | 'FULL';
 
+// Damage modal state
+type DamageModalState = {
+  isOpen: boolean;
+  lineId: string | null;
+  scope: 'FULL' | 'PARTIAL';
+  quantity: number;
+  notes: string;
+};
+
 // Multi-SKU receiving line
 type ReceivingLine = {
   id: string;          // UUID for line management
   skuId: string;       // Selected SKU
   qty: number;         // Quantity to receive
   unitCost: number;    // Unit cost for this SKU
-  notes: string;       // Item-specific notes
+  // Damage tracking per line
+  isDamaged: boolean;  // Whether this line has damaged items
+  damageScope: DamageScope; // Scope of damage: NONE, PARTIAL, or FULL
+  damagedQty: number;  // Quantity of damaged items (for PARTIAL)
+  damageNotes: string; // Notes specific to damage condition
 };
 
 // Shared form fields
@@ -79,8 +92,6 @@ type SharedReceivingFields = {
   date: string;
   vendor: string;
   packingSlip: string;
-  isDamaged: boolean;
-  damageDescription: string;
   globalNotes: string;
 };
 
@@ -96,10 +107,227 @@ interface ReceivingProps {
   vendors: Vendor[];
   skus: SKU[];
   layersBySku: Record<string, Layer[]>;
-  movements?: Array<{ datetime: string; type: 'RECEIVE' | 'ISSUE' | 'WASTE' | 'PRODUCE'; skuOrName: string; qty: number; value: number; ref: string }>;
+  movements?: Array<{ datetime: string; type: 'RECEIVE' | 'ISSUE' | 'DAMAGE' | 'PRODUCE'; skuOrName: string; qty: number; value: number; ref: string; notes?: string; generalNotes?: string; damageNotes?: string }>;
   onUpdateLayers?: (skuId: string, newLayers: Layer[]) => void;
   onUpdateSKU?: (skuId: string, updates: Partial<SKU>) => void;
-  onAddMovement?: (movement: { datetime: string; type: 'RECEIVE' | 'ISSUE' | 'WASTE' | 'PRODUCE'; skuOrName: string; qty: number; value: number; ref: string }) => void;
+  onAddMovement?: (movement: { datetime: string; type: 'RECEIVE' | 'ISSUE' | 'DAMAGE' | 'PRODUCE'; skuOrName: string; qty: number; value: number; ref: string; notes?: string; generalNotes?: string; damageNotes?: string }) => void;
+  onRefreshMovements?: () => void;
+}
+
+// Damage Configuration Modal
+function DamageModal({
+  isOpen,
+  onClose,
+  lineId,
+  totalQty,
+  currentScope,
+  currentQty,
+  currentNotes,
+  onSave
+}: {
+  isOpen: boolean;
+  onClose: () => void;
+  lineId: string | null;
+  totalQty: number;
+  currentScope: 'FULL' | 'PARTIAL';
+  currentQty: number;
+  currentNotes: string;
+  onSave: (scope: 'FULL' | 'PARTIAL', qty: number, notes: string) => void;
+}) {
+  const [scope, setScope] = useState<'FULL' | 'PARTIAL'>(currentScope);
+  const [damagedQty, setDamagedQty] = useState(currentQty);
+  const [notes, setNotes] = useState(currentNotes);
+  const [errors, setErrors] = useState<Record<string, string>>({});
+
+  // Reset modal state when opened
+  useEffect(() => {
+    if (isOpen) {
+      setScope(currentScope);
+      setDamagedQty(currentQty);
+      setNotes(currentNotes);
+      setErrors({});
+    }
+  }, [isOpen, currentScope, currentQty, currentNotes]);
+
+  const validate = () => {
+    const newErrors: Record<string, string> = {};
+    
+    if (scope === 'PARTIAL') {
+      if (damagedQty <= 0) {
+        newErrors.quantity = 'Damaged quantity must be greater than 0';
+      } else if (damagedQty >= totalQty) {
+        newErrors.quantity = 'Damaged quantity must be less than total quantity';
+      }
+    }
+    
+    if (notes.length > 500) {
+      newErrors.notes = 'Notes cannot exceed 500 characters';
+    }
+    
+    setErrors(newErrors);
+    return Object.keys(newErrors).length === 0;
+  };
+
+  const handleSave = () => {
+    if (validate()) {
+      const finalQty = scope === 'FULL' ? totalQty : damagedQty;
+      onSave(scope, finalQty, notes);
+      onClose();
+    }
+  };
+
+  const handleScopeChange = (newScope: 'FULL' | 'PARTIAL') => {
+    setScope(newScope);
+    if (newScope === 'FULL') {
+      setDamagedQty(totalQty);
+    } else {
+      setDamagedQty(Math.min(currentQty || 1, totalQty - 1));
+    }
+    setErrors({});
+  };
+
+  if (!isOpen) return null;
+
+  return createPortal(
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-lg shadow-xl max-w-md w-full max-h-[90vh] overflow-y-auto">
+        <div className="p-6">
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-lg font-semibold text-slate-900">Configure Damage</h3>
+            <button
+              onClick={onClose}
+              className="text-slate-400 hover:text-slate-600 text-xl leading-none"
+              aria-label="Close"
+            >
+              ×
+            </button>
+          </div>
+
+          <div className="space-y-4">
+            {/* Scope Selection */}
+            <div className="space-y-3">
+              <Label className="text-sm font-medium text-slate-700">Damage Scope</Label>
+              
+              <div className="space-y-2">
+                <label className="flex items-center space-x-3 p-3 border rounded-lg cursor-pointer hover:bg-slate-50">
+                  <input
+                    type="radio"
+                    name="damageScope"
+                    value="FULL"
+                    checked={scope === 'FULL'}
+                    onChange={() => handleScopeChange('FULL')}
+                    className="text-blue-600"
+                  />
+                  <div>
+                    <div className="font-medium text-sm">Full Batch Damaged</div>
+                    <div className="text-xs text-slate-500">All {totalQty} units are damaged</div>
+                  </div>
+                </label>
+
+                <label className="flex items-center space-x-3 p-3 border rounded-lg cursor-pointer hover:bg-slate-50">
+                  <input
+                    type="radio"
+                    name="damageScope"
+                    value="PARTIAL"
+                    checked={scope === 'PARTIAL'}
+                    onChange={() => handleScopeChange('PARTIAL')}
+                    className="text-blue-600"
+                  />
+                  <div>
+                    <div className="font-medium text-sm">Partial Damage</div>
+                    <div className="text-xs text-slate-500">Some units are damaged, others are good</div>
+                  </div>
+                </label>
+              </div>
+            </div>
+
+            {/* Quantity Input (only for PARTIAL) */}
+            {scope === 'PARTIAL' && (
+              <div className="space-y-2">
+                <Label htmlFor="damaged-qty" className="text-sm font-medium text-slate-700">
+                  Damaged Quantity
+                </Label>
+                <Input
+                  id="damaged-qty"
+                  type="number"
+                  min="1"
+                  max={totalQty - 1}
+                  value={damagedQty || ''}
+                  onChange={(e) => {
+                    const val = parseInt(e.target.value) || 0;
+                    setDamagedQty(val);
+                    setErrors(prev => ({ ...prev, quantity: '' }));
+                  }}
+                  className={errors.quantity ? 'border-red-500' : ''}
+                  placeholder="Enter damaged quantity"
+                />
+                {errors.quantity && (
+                  <div className="text-xs text-red-600">{errors.quantity}</div>
+                )}
+                <div className="text-xs text-slate-500">
+                  Received: {scope === 'PARTIAL' ? totalQty - damagedQty : 0} units | 
+                  Damage: {scope === 'PARTIAL' ? damagedQty : totalQty} units
+                </div>
+              </div>
+            )}
+
+            {scope === 'FULL' && (
+              <div className="bg-amber-50 border border-amber-200 rounded-lg p-3">
+                <div className="text-sm text-amber-800">
+                  <strong>Full Loss:</strong> All {totalQty} units will be marked as damage.
+                  No inventory will be received for this item.
+                </div>
+              </div>
+            )}
+
+            {/* Notes Field */}
+            <div className="space-y-2">
+              <Label htmlFor="damage-notes" className="text-sm font-medium text-slate-700">
+                Damage Notes <span className="text-slate-400">(Optional)</span>
+              </Label>
+              <Textarea
+                id="damage-notes"
+                value={notes}
+                onChange={(e) => {
+                  setNotes(e.target.value);
+                  setErrors(prev => ({ ...prev, notes: '' }));
+                }}
+                placeholder="Describe the damage condition..."
+                className={`min-h-[80px] ${errors.notes ? 'border-red-500' : ''}`}
+                maxLength={500}
+              />
+              {errors.notes && (
+                <div className="text-xs text-red-600">{errors.notes}</div>
+              )}
+              <div className="text-xs text-slate-500 text-right">
+                {notes.length}/500 characters
+              </div>
+            </div>
+          </div>
+
+          {/* Action Buttons */}
+          <div className="flex gap-3 mt-6 pt-4 border-t">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={onClose}
+              className="flex-1"
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              onClick={handleSave}
+              className="flex-1 bg-blue-600 text-white hover:bg-blue-700"
+            >
+              Save Changes
+            </Button>
+          </div>
+        </div>
+      </div>
+    </div>,
+    document.body
+  );
 }
 
 // Simple vendor select with search capability
@@ -132,7 +360,7 @@ function VendorSelect({
 
   if (isCustom) {
     return (
-      <div className="flex items-center gap-1 h-10 w-full max-w-full min-w-0">
+      <div className="flex items-stretch gap-2 h-10">
         <Input 
           id={id}
           value={customValue}
@@ -140,8 +368,8 @@ function VendorSelect({
             setCustomValue(e.target.value);
             onChange(e.target.value);
           }}
-          placeholder="Enter vendor..."
-          className={`flex-1 h-full min-w-0 ${error ? 'border-red-500 focus:ring-red-500' : ''}`}
+          placeholder="Enter vendor name..."
+          className={`flex-1 h-10 ${error ? 'border-red-500 focus:ring-red-500' : ''}`}
           aria-invalid={!!error}
           aria-describedby={error ? `${id}-error` : undefined}
         />
@@ -154,21 +382,23 @@ function VendorSelect({
             setCustomValue('');
             onChange('');
           }}
-          className="px-1 h-full text-xs shrink-0 min-w-0 w-6"
+          className="h-10 w-10 px-0 flex items-center justify-center shrink-0"
           title="Select from list"
         >
-          ↓
+          <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+          </svg>
         </Button>
       </div>
     );
   }
 
   return (
-    <div className="flex items-center gap-1 h-10 w-full max-w-full min-w-0">
+    <div className="flex items-stretch gap-2 h-10">
       <Select value={value} onValueChange={onChange}>
         <SelectTrigger 
           id={id}
-          className={`flex-1 h-full min-w-0 ${error ? 'border-red-500 focus:ring-red-500' : ''}`}
+          className={`flex-1 h-10 ${error ? 'border-red-500 focus:ring-red-500' : ''}`}
           aria-invalid={!!error}
           aria-describedby={error ? `${id}-error` : undefined}
         >
@@ -190,10 +420,12 @@ function VendorSelect({
           setIsCustom(true);
           setCustomValue(value);
         }}
-        className="px-1 h-full text-xs shrink-0 min-w-0 w-6"
-        title="Enter custom vendor"
+        className="h-10 w-10 px-0 flex items-center justify-center shrink-0 hover:bg-green-50 hover:border-green-300"
+        title="Add new vendor"
       >
-        +
+        <svg className="h-4 w-4 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+        </svg>
       </Button>
     </div>
   );
@@ -409,7 +641,7 @@ function MultiSKUSelect({
   );
 }
 
-export default function Receiving({ vendors, skus, layersBySku, movements, onUpdateLayers, onUpdateSKU, onAddMovement }: ReceivingProps) {
+export default function Receiving({ vendors, skus, layersBySku, movements, onUpdateLayers, onUpdateSKU, onAddMovement, onRefreshMovements }: ReceivingProps) {
   const [selectedLayersSku, setSelectedLayersSku] = useState<string>('');
   const [activeLayers, setActiveLayers] = useState<Layer[]>([]);
   const [isLoadingLayers, setIsLoadingLayers] = useState<boolean>(false);
@@ -439,7 +671,16 @@ export default function Receiving({ vendors, skus, layersBySku, movements, onUpd
 
   // Multi-SKU receiving lines
   const [receivingLines, setReceivingLines] = useState<ReceivingLine[]>([
-    { id: '1', skuId: '', qty: 0, unitCost: 0, notes: '' }
+    { 
+      id: '1', 
+      skuId: '', 
+      qty: 0, 
+      unitCost: 0, 
+      isDamaged: false,
+      damageScope: 'NONE',
+      damagedQty: 0,
+      damageNotes: ''
+    }
   ]);
   
   // Shared form fields
@@ -447,9 +688,16 @@ export default function Receiving({ vendors, skus, layersBySku, movements, onUpd
     date: new Date().toISOString().split('T')[0],
     vendor: '',
     packingSlip: '',
-    isDamaged: false,
-    damageDescription: '',
     globalNotes: ''
+  });
+
+  // Damage modal state
+  const [damageModal, setDamageModal] = useState<DamageModalState>({
+    isOpen: false,
+    lineId: null,
+    scope: 'PARTIAL',
+    quantity: 0,
+    notes: ''
   });
 
   // Legacy single-field state for compatibility (to be removed gradually)
@@ -482,7 +730,16 @@ export default function Receiving({ vendors, skus, layersBySku, movements, onUpd
   // Multi-SKU line management functions
   const addReceivingLine = useCallback(() => {
     const newId = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-    setReceivingLines(prev => [...prev, { id: newId, skuId: '', qty: 0, unitCost: 0, notes: '' }]);
+    setReceivingLines(prev => [...prev, { 
+      id: newId, 
+      skuId: '', 
+      qty: 0, 
+      unitCost: 0, 
+      isDamaged: false,
+      damageScope: 'NONE',
+      damagedQty: 0,
+      damageNotes: ''
+    }]);
   }, []);
 
   const removeReceivingLine = useCallback((id: string) => {
@@ -493,6 +750,64 @@ export default function Receiving({ vendors, skus, layersBySku, movements, onUpd
 
   const updateReceivingLine = useCallback((id: string, updates: Partial<ReceivingLine>) => {
     setReceivingLines(prev => prev.map(line => line.id === id ? { ...line, ...updates } : line));
+  }, []);
+
+  // Damage modal functions
+  const openDamageModal = useCallback((lineId: string) => {
+    const line = receivingLines.find(l => l.id === lineId);
+    if (!line || line.qty <= 0) return;
+    
+    setDamageModal({
+      isOpen: true,
+      lineId,
+      scope: line.damageScope === 'NONE' ? 'PARTIAL' : (line.damageScope as 'FULL' | 'PARTIAL'),
+      quantity: line.damagedQty || Math.min(1, line.qty),
+      notes: line.damageNotes || ''
+    });
+  }, [receivingLines]);
+
+  const closeDamageModal = useCallback(() => {
+    setDamageModal({
+      isOpen: false,
+      lineId: null,
+      scope: 'PARTIAL',
+      quantity: 0,
+      notes: ''
+    });
+  }, []);
+
+  const saveDamageConfig = useCallback((scope: 'FULL' | 'PARTIAL', qty: number, notes: string) => {
+    if (!damageModal.lineId) return;
+    
+    updateReceivingLine(damageModal.lineId, {
+      isDamaged: true,
+      damageScope: scope,
+      damagedQty: qty,
+      damageNotes: notes
+    });
+  }, [damageModal.lineId, updateReceivingLine]);
+
+  const clearDamageConfig = useCallback((lineId: string) => {
+    updateReceivingLine(lineId, {
+      isDamaged: false,
+      damageScope: 'NONE',
+      damagedQty: 0,
+      damageNotes: ''
+    });
+  }, [updateReceivingLine]);
+
+  // Calculate effective quantities (what actually goes to inventory vs damage)
+  const getEffectiveQuantities = useCallback((line: ReceivingLine) => {
+    if (!line.isDamaged || line.damageScope === 'NONE') {
+      return { receiveQty: line.qty, damageQty: 0 };
+    }
+    if (line.damageScope === 'FULL') {
+      return { receiveQty: 0, damageQty: line.qty };
+    }
+    // PARTIAL
+    const damageQty = Math.min(line.damagedQty, line.qty);
+    const receiveQty = Math.max(0, line.qty - damageQty);
+    return { receiveQty, damageQty };
   }, []);
 
   const updateSharedField = useCallback(<K extends keyof SharedReceivingFields>(
@@ -520,6 +835,20 @@ export default function Receiving({ vendors, skus, layersBySku, movements, onUpd
       if (!line.skuId) errors[`line-${line.id}-sku`] = 'SKU is required';
       if (line.qty <= 0) errors[`line-${line.id}-qty`] = 'Quantity must be greater than 0';
       if (line.unitCost <= 0) errors[`line-${line.id}-cost`] = 'Unit cost must be greater than 0';
+      
+      // Validate damage configuration
+      if (line.isDamaged) {
+        if (line.damageScope === 'PARTIAL') {
+          if (line.damagedQty <= 0) {
+            errors[`line-${line.id}-damage-qty`] = 'Damaged quantity must be greater than 0';
+          } else if (line.damagedQty >= line.qty) {
+            errors[`line-${line.id}-damage-qty`] = 'Damaged quantity must be less than total quantity';
+          }
+        }
+        if (line.damageNotes && line.damageNotes.length > 500) {
+          errors[`line-${line.id}-damage-notes`] = 'Damage notes cannot exceed 500 characters';
+        }
+      }
     });
     
     // Check for duplicate SKUs
@@ -558,17 +887,57 @@ export default function Receiving({ vendors, skus, layersBySku, movements, onUpd
     try {
       for (const line of receivingLines) {
         try {
-          await processReceiving({
-            skuId: line.skuId,
-            quantity: line.qty,
-            unitCost: line.unitCost,
-            date: new Date(sharedFields.date),
-            vendorName: sharedFields.vendor,
-            packingSlipNo: sharedFields.packingSlip || undefined,
-            notes: `${sharedFields.globalNotes} ${line.notes}`.trim() || undefined
-          });
+          const { receiveQty, damageQty } = getEffectiveQuantities(line);
+          
+          // Process RECEIVE movement (only if there's quantity to receive)
+          if (receiveQty > 0) {
+            await processReceiving({
+              skuId: line.skuId,
+              quantity: receiveQty,
+              unitCost: line.unitCost,
+              date: new Date(sharedFields.date),
+              vendorName: sharedFields.vendor,
+              packingSlipNo: sharedFields.packingSlip || undefined,
+              notes: sharedFields.globalNotes?.trim() || undefined
+            });
+          }
+          
+          // Process DAMAGE movement (only if there's damaged quantity)
+          if (damageQty > 0) {
+            const damageRef = `${sharedFields.packingSlip || `BATCH-${Date.now()}`}-DAMAGED`;
+            
+            await movementOperations.createDamageMovement({
+              skuId: line.skuId,
+              quantity: damageQty,
+              unitCost: line.unitCost,
+              date: new Date(sharedFields.date),
+              reference: damageRef,
+              notes: line.damageNotes || undefined,
+              generalNotes: sharedFields.globalNotes?.trim() || undefined,
+              damageNotes: line.damageNotes || undefined
+            });
+            
+            // Also add to UI optimistically
+            onAddMovement?.({
+              datetime: new Date().toISOString().replace('T', ' ').substring(0, 16),
+              type: 'DAMAGE',
+              skuOrName: line.skuId,
+              qty: -damageQty,
+              value: -(damageQty * line.unitCost),
+              ref: damageRef,
+              notes: line.damageNotes || undefined,
+              generalNotes: sharedFields.globalNotes?.trim() || undefined,
+              damageNotes: line.damageNotes || undefined
+            });
+          }
+          
           results.push({ line, success: true });
-          notify(`✓ ${line.skuId} received successfully`, 'success');
+          const statusText = receiveQty > 0 && damageQty > 0 
+            ? `received ${receiveQty}, damaged ${damageQty}`
+            : receiveQty > 0 
+            ? `received ${receiveQty}` 
+            : `damaged ${damageQty}`;
+          notify(`✓ ${line.skuId} ${statusText}`, 'success');
         } catch (error: any) {
           results.push({ 
             line, 
@@ -588,15 +957,29 @@ export default function Receiving({ vendors, skus, layersBySku, movements, onUpd
       if (successCount === totalCount) {
         notify(`All ${totalCount} items processed successfully!`, 'success');
         // Reset form on complete success
-        setReceivingLines([{ id: '1', skuId: '', qty: 0, unitCost: 0, notes: '' }]);
+        setReceivingLines([{ 
+          id: '1', 
+          skuId: '', 
+          qty: 0, 
+          unitCost: 0, 
+          isDamaged: false,
+          damageScope: 'NONE',
+          damagedQty: 0,
+          damageNotes: ''
+        }]);
         setSharedFields(prev => ({ ...prev, globalNotes: '', packingSlip: '' }));
       } else {
         notify(`${successCount}/${totalCount} items processed successfully`, 'info');
       }
 
-      // Refresh inventory if callback provided
+      // Refresh inventory and movements to get real data from database
       if (onUpdateLayers || onUpdateSKU) {
         // Trigger refresh (implementation depends on parent component)
+      }
+      
+      // Refresh movements to show real data with notes in tooltips
+      if (onRefreshMovements) {
+        onRefreshMovements();
       }
       
     } finally {
@@ -728,14 +1111,14 @@ export default function Receiving({ vendors, skus, layersBySku, movements, onUpd
   const outcome = useMemo(() => {
     const qty = Math.max(0, receivingQty || 0);
     if (!isDamaged || damageScope === 'NONE') {
-      return { acceptQty: qty, wasteQty: 0 };
+      return { acceptQty: qty, damageQty: 0 };
     }
     if (damageScope === 'FULL') {
-      return { acceptQty: 0, wasteQty: qty };
+      return { acceptQty: 0, damageQty: qty };
     }
     // PARTIAL
     const rej = Math.max(0, Math.min(rejectedQty || 0, qty));
-    return { acceptQty: Math.max(0, qty - rej), wasteQty: rej };
+    return { acceptQty: Math.max(0, qty - rej), damageQty: rej };
   }, [isDamaged, damageScope, receivingQty, rejectedQty]);
 
   // API mutation for receiving
@@ -748,7 +1131,7 @@ export default function Receiving({ vendors, skus, layersBySku, movements, onUpd
       return;
     }
     const ref = packingSlip || `PS-${Date.now()}`;
-    const { acceptQty, wasteQty } = outcome;
+    const { acceptQty, damageQty } = outcome;
     telemetry.event('receiving_submit_attempt', {
       sku: receivingSku,
       qty: acceptQty,
@@ -758,18 +1141,18 @@ export default function Receiving({ vendors, skus, layersBySku, movements, onUpd
       damageScope,
       ref,
     });
-    // FULL damage: only WASTE, no RECEIVE
+    // FULL damage: only DAMAGE, no RECEIVE
     if (isDamaged && damageScope === 'FULL') {
       onAddMovement?.({
         datetime: new Date().toISOString().replace('T', ' ').substring(0, 16),
-        type: 'WASTE',
+        type: 'DAMAGE',
         skuOrName: receivingSku,
-        qty: -wasteQty,
-        value: -(wasteQty * unitCost),
+        qty: -damageQty,
+        value: -(damageQty * unitCost),
         ref: `${ref}-FULL-REJECT`
       });
 
-      notify(`Packing slip fully rejected. ${wasteQty} units registered as waste.`, 'info');
+      notify(`Packing slip fully rejected. ${damageQty} units registered as damage.`, 'info');
       // Reset form
       setReceivingSku('');
       setReceivingQty(0);
@@ -864,25 +1247,50 @@ export default function Receiving({ vendors, skus, layersBySku, movements, onUpd
         skuOrName: receivingSku,
         qty: acceptQty,
         value: acceptQty * unitCost,
-        ref
+        ref,
+        notes: notes?.trim() || undefined,
+        generalNotes: notes?.trim() || undefined
       });
 
-      if (isDamaged && damageScope === 'PARTIAL' && wasteQty > 0) {
+      if (isDamaged && damageScope === 'PARTIAL' && damageQty > 0) {
+        const damageRef = `${ref}-DAMAGED`;
+        
+        // Create real DAMAGE movement in database
+        await movementOperations.createDamageMovement({
+          skuId: receivingSku,
+          quantity: damageQty,
+          unitCost: unitCost,
+          date: new Date(date),
+          reference: damageRef,
+          notes: notes?.trim() || undefined,
+          generalNotes: notes?.trim() || undefined,
+          damageNotes: damageDescription?.trim() || undefined
+        });
+        
+        // Also add to UI optimistically
         onAddMovement?.({
           datetime: new Date().toISOString().replace('T', ' ').substring(0, 16),
-          type: 'WASTE',
+          type: 'DAMAGE',
           skuOrName: receivingSku,
-          qty: -wasteQty,
-          value: -(wasteQty * unitCost),
-          ref: `${ref}-REJECTED`
+          qty: -damageQty,
+          value: -(damageQty * unitCost),
+          ref: damageRef,
+          notes: notes?.trim() || undefined,
+          generalNotes: notes?.trim() || undefined,
+          damageNotes: damageDescription?.trim() || undefined
         });
+        
+        // Refresh movements to get real data with notes
+        if (onRefreshMovements) {
+          onRefreshMovements();
+        }
       }
 
       notify(`Successfully approved! ${acceptQty} units added to inventory.`, 'success');
       telemetry.event('receiving_submit_success', {
         sku: receivingSku,
         acceptQty,
-        wasteQty,
+        damageQty,
         unitCost,
         ref,
       });
@@ -918,7 +1326,7 @@ export default function Receiving({ vendors, skus, layersBySku, movements, onUpd
   };
 
   // Open confirmation dialog first
-  const handleApprove = () => {
+  const handleApprove = async () => {
     if (!isFormValid) {
       focusFirstError();
       return;
@@ -927,7 +1335,7 @@ export default function Receiving({ vendors, skus, layersBySku, movements, onUpd
   };
 
   // DAM-01: Full rejection handler
-  const handleRejectAll = () => {
+  const handleRejectAll = async () => {
     if (!receivingSku || receivingQty <= 0) {
       notify('Please fill in SKU and quantity first', 'error');
       return;
@@ -939,17 +1347,44 @@ export default function Receiving({ vendors, skus, layersBySku, movements, onUpd
       unitCost,
       ref: `${packingSlip || `PS-${Date.now()}`}-FULL-REJECT`,
     });
-    // Register WASTE movement for full rejection
-    onAddMovement?.({
-      datetime: new Date().toISOString().replace('T', ' ').substring(0, 16),
-      type: 'WASTE',
-      skuOrName: receivingSku,
-      qty: -receivingQty,
-      value: -(receivingQty * (unitCost || 0)),
-      ref: `${packingSlip || `PS-${Date.now()}`}-FULL-REJECT`
-    });
+    const rejectRef = `${packingSlip || `PS-${Date.now()}`}-FULL-REJECT`;
+    
+    // Create real DAMAGE movement in database
+    try {
+      await movementOperations.createDamageMovement({
+        skuId: receivingSku,
+        quantity: receivingQty,
+        unitCost: unitCost || 0,
+        date: new Date(),
+        reference: rejectRef,
+        notes: notes?.trim() || undefined,
+        generalNotes: notes?.trim() || undefined,
+        damageNotes: 'Full rejection - entire packing slip rejected'
+      });
+      
+      // Also add to UI optimistically
+      onAddMovement?.({
+        datetime: new Date().toISOString().replace('T', ' ').substring(0, 16),
+        type: 'DAMAGE',
+        skuOrName: receivingSku,
+        qty: -receivingQty,
+        value: -(receivingQty * (unitCost || 0)),
+        ref: rejectRef,
+        notes: notes?.trim() || undefined,
+        generalNotes: notes?.trim() || undefined,
+        damageNotes: 'Full rejection - entire packing slip rejected'
+      });
+      
+      // Refresh movements to get real data with notes
+      if (onRefreshMovements) {
+        onRefreshMovements();
+      }
+    } catch (error: any) {
+      notify(`Failed to create damage movement: ${error.message}`, 'error');
+      return;
+    }
 
-    notify(`Entire packing slip rejected! ${receivingQty} units marked as waste.`, 'info');
+    notify(`Entire packing slip rejected! ${receivingQty} units marked as damage.`, 'info');
     
     // Reset form
     setDate(new Date().toISOString().split('T')[0]);
@@ -966,7 +1401,7 @@ export default function Receiving({ vendors, skus, layersBySku, movements, onUpd
   };
 
   // NAV-33: Return to vendor handler (only when isDamaged && damageScope === 'FULL')
-  const handleReturnToVendor = () => {
+  const handleReturnToVendor = async () => {
     if (!receivingSku || receivingQty <= 0) {
       notify('Please fill in SKU and quantity first', 'error');
       return;
@@ -985,15 +1420,42 @@ export default function Receiving({ vendors, skus, layersBySku, movements, onUpd
       ref,
     });
     
-    // Register return movement (negative RECEIVE to track the return)
-    onAddMovement?.({
-      datetime: new Date().toISOString().replace('T', ' ').substring(0, 16),
-      type: 'WASTE', // Using WASTE type to track returns
-      skuOrName: receivingSku,
-      qty: -receivingQty,
-      value: -(receivingQty * (unitCost || 0)),
-      ref: `${ref}-RETURN-TO-VENDOR`
-    });
+    const returnRef = `${ref}-RETURN-TO-VENDOR`;
+    
+    // Create real DAMAGE movement in database
+    try {
+      await movementOperations.createDamageMovement({
+        skuId: receivingSku,
+        quantity: receivingQty,
+        unitCost: unitCost || 0,
+        date: new Date(),
+        reference: returnRef,
+        notes: notes?.trim() || undefined,
+        generalNotes: notes?.trim() || undefined,
+        damageNotes: `Returned to vendor: ${vendorValue}`
+      });
+      
+      // Also add to UI optimistically
+      onAddMovement?.({
+        datetime: new Date().toISOString().replace('T', ' ').substring(0, 16),
+        type: 'DAMAGE',
+        skuOrName: receivingSku,
+        qty: -receivingQty,
+        value: -(receivingQty * (unitCost || 0)),
+        ref: returnRef,
+        notes: notes?.trim() || undefined,
+        generalNotes: notes?.trim() || undefined,
+        damageNotes: `Returned to vendor: ${vendorValue}`
+      });
+      
+      // Refresh movements to get real data with notes
+      if (onRefreshMovements) {
+        onRefreshMovements();
+      }
+    } catch (error: any) {
+      notify(`Failed to create damage movement: ${error.message}`, 'error');
+      return;
+    }
 
     notify(`${receivingQty} units of ${receivingSku} returned to vendor: ${vendorValue}`, 'info');
     
@@ -1051,11 +1513,14 @@ export default function Receiving({ vendors, skus, layersBySku, movements, onUpd
         </CardHeader>
         <CardContent className="p-6 space-y-6">
           {/* Shared Fields */}
-          <div className="w-full p-4 bg-slate-50 rounded-lg">
-            <div className="flex flex-col lg:flex-row gap-3 w-full">
-              {/* Date Field */}
-              <div className="flex flex-col space-y-2 lg:w-[22%] min-w-0">
-                <Label htmlFor="shared-date" className="text-sm font-medium text-slate-700">Date</Label>
+          <div className="bg-slate-50 rounded-lg p-6">
+            <h3 className="text-sm font-semibold text-slate-900 mb-4">Batch Information</h3>
+            
+            {/* Desktop: Grid layout, Mobile: Stacked */}
+            <div className="grid grid-cols-1 md:grid-cols-12 gap-4">
+              {/* Date Field - Short width */}
+              <div className="md:col-span-3">
+                <Label htmlFor="shared-date" className="text-sm font-medium text-slate-700 block mb-2">Date</Label>
                 <Input 
                   id="shared-date"
                   type="date" 
@@ -1063,27 +1528,30 @@ export default function Receiving({ vendors, skus, layersBySku, movements, onUpd
                   onChange={(e) => setSharedFields(prev => ({ ...prev, date: e.target.value }))}
                   className="h-10 w-full"
                 />
+                {/* Fixed error space to prevent layout shift */}
+                <div className="h-5 mt-1"></div>
               </div>
               
-              {/* Vendor Field - Máximo espaço */}
-              <div className="flex flex-col space-y-2 lg:w-[40%] min-w-0 max-w-[40%]">
-                <Label htmlFor="shared-vendor" className="text-sm font-medium text-slate-700">Vendor *</Label>
-                <div className="h-10 w-full min-w-0 overflow-hidden">
-                  <VendorSelect 
-                    id="shared-vendor"
-                    value={sharedFields.vendor} 
-                    onChange={(value) => setSharedFields(prev => ({ ...prev, vendor: value }))}
-                    suggestions={vendors}
-                    error={errors.vendor}
-                  />
+              {/* Vendor Field - Medium width with integrated button */}
+              <div className="md:col-span-5">
+                <Label htmlFor="shared-vendor" className="text-sm font-medium text-slate-700 block mb-2">Vendor *</Label>
+                <VendorSelect 
+                  id="shared-vendor"
+                  value={sharedFields.vendor} 
+                  onChange={(value) => setSharedFields(prev => ({ ...prev, vendor: value }))}
+                  suggestions={vendors}
+                  error={errors.vendor}
+                />
+                {/* Fixed error space to prevent layout shift */}
+                <div className="h-5 mt-1">
+                  {errors.vendor && <span className="text-xs text-red-600">{errors.vendor}</span>}
                 </div>
-                {errors.vendor && <ErrorMessage message={errors.vendor} id="shared-vendor-error" />}
               </div>
 
-              {/* Packing Slip Field */}
-              <div className="flex flex-col space-y-2 lg:w-[20%] min-w-0">
-                <Label htmlFor="shared-packing-slip" className="text-sm font-medium text-slate-700">Packing Slip</Label>
-                <div className="relative h-10 w-full">
+              {/* Packing Slip Field - Remaining space */}
+              <div className="md:col-span-4">
+                <Label htmlFor="shared-packing-slip" className="text-sm font-medium text-slate-700 block mb-2">Packing Slip</Label>
+                <div className="relative">
                   <Input 
                     id="shared-packing-slip"
                     value={sharedFields.packingSlip}
@@ -1092,79 +1560,56 @@ export default function Receiving({ vendors, skus, layersBySku, movements, onUpd
                       setPackingSlipEdited(true);
                     }}
                     onFocus={() => {
-                      // If user focuses on empty field, allow auto-suggestions again
                       if (!sharedFields.packingSlip) {
                         setPackingSlipEdited(false);
                       }
                     }}
                     className="h-10 w-full pr-12"
-                    placeholder="Auto-generated or manual"
+                    placeholder="Auto after Vendor & SKU & Qty"
                   />
                   {!packingSlipEdited && sharedFields.packingSlip && (
-                    <div className="absolute right-1 top-1/2 -translate-y-1/2">
-                      <Badge variant="secondary" className="text-xs px-1 py-0.5">
+                    <div className="absolute right-2 top-1/2 -translate-y-1/2">
+                      <Badge variant="secondary" className="text-xs px-1.5 py-0.5">
                         Auto
                       </Badge>
                     </div>
                   )}
                 </div>
-              </div>
-
-              {/* Damage Status Field - Mínimo */}
-              <div className="flex flex-col space-y-2 lg:w-[18%] min-w-0">
-                <Label className="text-sm font-medium text-slate-700">Damage Status</Label>
-                <div className="flex items-center h-10 px-3 border rounded-md bg-white w-full">
-                  <input 
-                    id="shared-damaged"
-                    type="checkbox"
-                    checked={sharedFields.isDamaged}
-                    onChange={(e) => setSharedFields(prev => ({ ...prev, isDamaged: e.target.checked }))}
-                    className="rounded mr-2"
-                  />
-                  <Label htmlFor="shared-damaged" className="text-sm cursor-pointer truncate">Items damaged</Label>
-                </div>
+                {/* Fixed error space to prevent layout shift */}
+                <div className="h-5 mt-1"></div>
               </div>
             </div>
           </div>
 
-          {/* Damage Description - conditional on global damage flag */}
-          {sharedFields.isDamaged && (
-            <div className="space-y-2">
-              <Label htmlFor="shared-damage-desc" className="text-sm font-medium">Damage Description</Label>
-              <Textarea 
-                id="shared-damage-desc"
-                value={sharedFields.damageDescription}
-                onChange={(e) => setSharedFields(prev => ({ ...prev, damageDescription: e.target.value }))}
-                placeholder="Describe the damage affecting items in this receiving..."
-                className="min-h-[60px]"
-              />
-            </div>
-          )}
 
           {/* Global Notes */}
-          <div className="space-y-2">
-            <Label htmlFor="shared-notes" className="text-sm font-medium">Notes (applied to all items)</Label>
+          <div className="bg-white border rounded-lg p-4">
+            <Label htmlFor="shared-notes" className="text-sm font-medium text-slate-700 block mb-2">Global Notes</Label>
             <Textarea 
               id="shared-notes"
               value={sharedFields.globalNotes}
               onChange={(e) => setSharedFields(prev => ({ ...prev, globalNotes: e.target.value }))}
-              placeholder="Optional notes for all items in this receiving batch..."
-              className="min-h-[60px]"
+              placeholder="Optional notes that will be applied to all items in this batch..."
+              className="min-h-[80px] resize-none"
             />
+            <p className="text-xs text-slate-500 mt-2">These notes will be saved with each item in this receiving batch.</p>
           </div>
 
           {/* Multi-SKU Table */}
           <div className="space-y-4">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-              <Label className="text-sm font-medium text-slate-700">Receiving Items</Label>
+            <div className="flex items-center justify-between">
+              <div>
+                <h3 className="text-sm font-semibold text-slate-900">Receiving Items</h3>
+                <p className="text-xs text-slate-500 mt-1">Add multiple SKUs to process in this batch</p>
+              </div>
               <Button 
                 type="button" 
                 variant="outline" 
                 size="sm" 
                 onClick={addReceivingLine}
-                className="text-green-600 border-green-200 hover:bg-green-50 self-start sm:self-auto"
+                className="text-green-700 border-green-300 hover:bg-green-50 hover:border-green-400 transition-colors"
               >
-                <Plus className="h-4 w-4 mr-1" />
+                <Plus className="h-4 w-4 mr-2" />
                 Add Item
               </Button>
             </div>
@@ -1173,13 +1618,18 @@ export default function Receiving({ vendors, skus, layersBySku, movements, onUpd
               {/* Single Grid Container for Header and Body */}
               <div className="w-full">
                 {/* Combined Header and Body Grid */}
-                <div style={{display: 'grid', gridTemplateColumns: '2fr 1fr 1fr 2fr 0.5fr', gap: '12px'}}>
+                <div 
+                  className="grid gap-2 sm:gap-3"
+                  style={{
+                    gridTemplateColumns: '3fr 1fr 1fr 1.5fr 0.5fr'
+                  }}
+                >
                   {/* Header Row */}
-                  <div className="bg-slate-50 border-b px-4 py-3 text-sm font-medium text-slate-700">SKU</div>
-                  <div className="bg-slate-50 border-b px-4 py-3 text-sm font-medium text-slate-700">Quantity</div>
-                  <div className="bg-slate-50 border-b px-4 py-3 text-sm font-medium text-slate-700">Unit Cost</div>
-                  <div className="bg-slate-50 border-b px-4 py-3 text-sm font-medium text-slate-700">Notes</div>
-                  <div className="bg-slate-50 border-b px-4 py-3 text-sm font-medium text-slate-700 text-center">Actions</div>
+                  <div className="bg-slate-50 border-b px-3 py-3 text-sm font-medium text-slate-700">SKU</div>
+                  <div className="bg-slate-50 border-b px-2 py-3 text-sm font-medium text-slate-700">Quantity</div>
+                  <div className="bg-slate-50 border-b px-2 py-3 text-sm font-medium text-slate-700">Unit Cost</div>
+                  <div className="bg-slate-50 border-b px-2 py-3 text-sm font-medium text-slate-700">Damage Status</div>
+                  <div className="bg-slate-50 border-b px-1 py-3 text-sm font-medium text-slate-700 text-center">Actions</div>
                   
                   {/* Data Rows */}
                   {receivingLines.map((line, index) => {
@@ -1191,7 +1641,7 @@ export default function Receiving({ vendors, skus, layersBySku, movements, onUpd
                     return (
                       <React.Fragment key={line.id}>
                         {/* SKU Column */}
-                        <div className={`px-4 py-3 min-h-[60px] ${hasErrors ? "bg-red-50" : ""} ${index > 0 ? "border-t" : ""}`}>
+                        <div className={`px-3 py-3 min-h-[60px] ${hasErrors ? "bg-red-50" : ""} ${index > 0 ? "border-t" : ""}`}>
                           <div className="space-y-1">
                             <SKUSelect 
                               id={`sku-${line.id}`}
@@ -1211,9 +1661,9 @@ export default function Receiving({ vendors, skus, layersBySku, movements, onUpd
                         </div>
                         
                         {/* Quantity Column */}
-                        <div className={`px-4 py-3 min-h-[60px] ${hasErrors ? "bg-red-50" : ""} ${index > 0 ? "border-t" : ""}`}>
+                        <div className={`px-2 py-3 min-h-[60px] ${hasErrors ? "bg-red-50" : ""} ${index > 0 ? "border-t" : ""}`}>
                           <div className="space-y-1">
-                            <div className="flex items-center gap-1">
+                            <div className="flex items-center gap-0.5">
                               <Input 
                                 id={`qty-${line.id}`}
                                 type="number"
@@ -1224,10 +1674,10 @@ export default function Receiving({ vendors, skus, layersBySku, movements, onUpd
                                   const n = Number.isNaN(parseFloat(e.target.value)) ? 0 : parseFloat(e.target.value);
                                   updateReceivingLine(line.id, { qty: Math.max(0, n) });
                                 }}
-                                className={`h-9 flex-1 ${errors[`line-${line.id}-qty`] ? 'border-red-500' : ''}`}
+                                className={`h-9 w-full min-w-0 ${errors[`line-${line.id}-qty`] ? 'border-red-500' : ''}`}
                                 placeholder="0"
                               />
-                              <span className="text-xs text-slate-500 min-w-[24px] text-center">
+                              <span className="text-xs text-slate-500 min-w-[20px] text-center flex-shrink-0">
                                 {line.skuId ? skus.find(s => s.id === line.skuId)?.unit || '' : ''}
                               </span>
                             </div>
@@ -1241,7 +1691,7 @@ export default function Receiving({ vendors, skus, layersBySku, movements, onUpd
                         </div>
                         
                         {/* Unit Cost Column */}
-                        <div className={`px-4 py-3 min-h-[60px] ${hasErrors ? "bg-red-50" : ""} ${index > 0 ? "border-t" : ""}`}>
+                        <div className={`px-2 py-3 min-h-[60px] ${hasErrors ? "bg-red-50" : ""} ${index > 0 ? "border-t" : ""}`}>
                           <div className="space-y-1">
                             <CurrencyInput 
                               id={`cost-${line.id}`}
@@ -1259,29 +1709,71 @@ export default function Receiving({ vendors, skus, layersBySku, movements, onUpd
                           </div>
                         </div>
                         
-                        {/* Notes Column */}
-                        <div className={`px-4 py-3 min-h-[60px] ${hasErrors ? "bg-red-50" : ""} ${index > 0 ? "border-t" : ""}`}>
-                          <div className="h-9 flex items-center">
-                            <Input 
-                              value={line.notes}
-                              onChange={(e) => updateReceivingLine(line.id, { notes: e.target.value })}
-                              placeholder="Optional notes"
-                              className="h-9 w-full"
-                            />
+                        {/* Damage Status Column */}
+                        <div className={`px-2 py-3 min-h-[60px] ${hasErrors ? "bg-red-50" : ""} ${index > 0 ? "border-t" : ""}`}>
+                          <div className="flex flex-col gap-1.5">
+                            <div className="flex items-center gap-1.5">
+                              <input
+                                type="checkbox"
+                                id={`damage-${line.id}`}
+                                checked={line.isDamaged}
+                                onChange={(e) => {
+                                  if (e.target.checked) {
+                                    openDamageModal(line.id);
+                                  } else {
+                                    clearDamageConfig(line.id);
+                                  }
+                                }}
+                                className="rounded w-3 h-3"
+                                disabled={!line.skuId || line.qty <= 0}
+                              />
+                              <Label 
+                                htmlFor={`damage-${line.id}`} 
+                                className="text-xs cursor-pointer leading-tight"
+                              >
+                                Damaged
+                              </Label>
+                            </div>
+                            
+                            {line.isDamaged && (
+                              <div className="text-xs space-y-1">
+                                <div className="flex items-center gap-1 flex-wrap">
+                                  {line.damageScope === 'FULL' ? (
+                                    <Badge variant="destructive" className="text-xs px-1 py-0 h-5">Full</Badge>
+                                  ) : (
+                                    <Badge variant="secondary" className="text-xs px-1 py-0 h-5">
+                                      {line.damagedQty}/{line.qty}
+                                    </Badge>
+                                  )}
+                                  <button
+                                    type="button"
+                                    onClick={() => openDamageModal(line.id)}
+                                    className="text-blue-600 hover:text-blue-800 text-xs underline leading-tight"
+                                  >
+                                    Edit
+                                  </button>
+                                </div>
+                                {line.damageNotes && (
+                                  <div className="text-slate-500 text-xs truncate leading-tight" title={line.damageNotes}>
+                                    {line.damageNotes}
+                                  </div>
+                                )}
+                              </div>
+                            )}
                           </div>
                         </div>
                         
                         {/* Actions Column */}
-                        <div className={`px-4 py-3 min-h-[60px] ${hasErrors ? "bg-red-50" : ""} ${index > 0 ? "border-t" : ""} flex justify-center items-start pt-6`}>
+                        <div className={`px-1 py-3 min-h-[60px] ${hasErrors ? "bg-red-50" : ""} ${index > 0 ? "border-t" : ""} flex justify-center items-start pt-6`}>
                           <Button 
                             type="button"
                             variant="outline"
                             size="sm"
                             onClick={() => removeReceivingLine(line.id)}
                             disabled={receivingLines.length <= 1}
-                            className="text-red-600 border-red-200 hover:bg-red-50 h-9 w-9 p-0"
+                            className="text-red-600 border-red-200 hover:bg-red-50 h-8 w-8 p-0 min-w-8"
                           >
-                            <Minus className="h-4 w-4" />
+                            <Minus className="h-3 w-3" />
                           </Button>
                         </div>
                       </React.Fragment>
@@ -1293,11 +1785,44 @@ export default function Receiving({ vendors, skus, layersBySku, movements, onUpd
 
             {/* Processing Summary */}
             <div className="bg-slate-50 p-3 rounded-lg text-sm">
-              <div className="flex justify-between items-center">
-                <span className="text-slate-600">Total Items: {receivingLines.filter(l => l.skuId && l.qty > 0).length}</span>
-                <span className="text-slate-600">
-                  Total Value: ${receivingLines.filter(l => l.skuId && l.qty > 0).reduce((sum, l) => sum + (l.qty * l.unitCost), 0).toFixed(2)}
-                </span>
+              <div className="grid grid-cols-2 gap-4 text-xs">
+                <div className="space-y-1">
+                  <div className="flex justify-between">
+                    <span className="text-slate-600">Total Items:</span>
+                    <span className="font-medium">{receivingLines.filter(l => l.skuId && l.qty > 0).length}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-slate-600">Total Quantity:</span>
+                    <span className="font-medium">{receivingLines.filter(l => l.skuId && l.qty > 0).reduce((sum, l) => sum + l.qty, 0).toLocaleString()}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-slate-600">Total Value:</span>
+                    <span className="font-medium">${receivingLines.filter(l => l.skuId && l.qty > 0).reduce((sum, l) => sum + (l.qty * l.unitCost), 0).toFixed(2)}</span>
+                  </div>
+                </div>
+                <div className="space-y-1 border-l pl-4">
+                  <div className="flex justify-between">
+                    <span className="text-green-600">To Inventory:</span>
+                    <span className="font-medium text-green-600">
+                      {receivingLines.filter(l => l.skuId && l.qty > 0).reduce((sum, l) => sum + getEffectiveQuantities(l).receiveQty, 0).toLocaleString()}
+                    </span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-red-600">Damage:</span>
+                    <span className="font-medium text-red-600">
+                      {receivingLines.filter(l => l.skuId && l.qty > 0).reduce((sum, l) => sum + getEffectiveQuantities(l).damageQty, 0).toLocaleString()}
+                    </span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-green-600">Effective Value:</span>
+                    <span className="font-medium text-green-600">
+                      ${receivingLines.filter(l => l.skuId && l.qty > 0).reduce((sum, l) => {
+                        const { receiveQty } = getEffectiveQuantities(l);
+                        return sum + (receiveQty * l.unitCost);
+                      }, 0).toFixed(2)}
+                    </span>
+                  </div>
+                </div>
               </div>
             </div>
 
@@ -1346,9 +1871,6 @@ export default function Receiving({ vendors, skus, layersBySku, movements, onUpd
                     <div><span className="text-slate-700">Date:</span> {sharedFields.date}</div>
                     <div><span className="text-slate-700">Vendor:</span> {sharedFields.vendor || '-'}</div>
                     <div><span className="text-slate-700">Packing Slip:</span> {sharedFields.packingSlip || '-'}</div>
-                    {sharedFields.isDamaged && (
-                      <div><span className="text-slate-700">Damage:</span> Yes - {sharedFields.damageDescription || 'No description'}</div>
-                    )}
                   </div>
 
                   <div className="space-y-3">
@@ -1358,28 +1880,44 @@ export default function Receiving({ vendors, skus, layersBySku, movements, onUpd
                         <TableHeader>
                           <TableRow className="bg-slate-50">
                             <TableHead className="text-xs">SKU</TableHead>
-                            <TableHead className="text-xs text-right">Qty</TableHead>
+                            <TableHead className="text-xs text-right">Total Qty</TableHead>
+                            <TableHead className="text-xs text-right text-green-700">To Inventory</TableHead>
+                            <TableHead className="text-xs text-right text-red-700">Damage</TableHead>
                             <TableHead className="text-xs text-right">Cost</TableHead>
-                            <TableHead className="text-xs text-right">Value</TableHead>
+                            <TableHead className="text-xs text-right text-green-700">Effective Value</TableHead>
                           </TableRow>
                         </TableHeader>
                         <TableBody>
-                          {receivingLines.filter(l => l.skuId && l.qty > 0).map(line => (
-                            <TableRow key={line.id} className="text-xs">
-                              <TableCell>{line.skuId}</TableCell>
-                              <TableCell className="text-right">{line.qty}</TableCell>
-                              <TableCell className="text-right">${line.unitCost.toFixed(2)}</TableCell>
-                              <TableCell className="text-right">${(line.qty * line.unitCost).toFixed(2)}</TableCell>
-                            </TableRow>
-                          ))}
+                          {receivingLines.filter(l => l.skuId && l.qty > 0).map(line => {
+                            const { receiveQty, damageQty } = getEffectiveQuantities(line);
+                            return (
+                              <TableRow key={line.id} className="text-xs">
+                                <TableCell>{line.skuId}</TableCell>
+                                <TableCell className="text-right">{line.qty}</TableCell>
+                                <TableCell className="text-right text-green-700 font-medium">{receiveQty}</TableCell>
+                                <TableCell className="text-right text-red-700">{damageQty}</TableCell>
+                                <TableCell className="text-right">${line.unitCost.toFixed(2)}</TableCell>
+                                <TableCell className="text-right text-green-700 font-medium">${(receiveQty * line.unitCost).toFixed(2)}</TableCell>
+                              </TableRow>
+                            );
+                          })}
                           <TableRow className="bg-slate-50 font-medium text-xs">
                             <TableCell>Total</TableCell>
                             <TableCell className="text-right">
                               {receivingLines.filter(l => l.skuId && l.qty > 0).reduce((sum, l) => sum + l.qty, 0)}
                             </TableCell>
+                            <TableCell className="text-right text-green-700">
+                              {receivingLines.filter(l => l.skuId && l.qty > 0).reduce((sum, l) => sum + getEffectiveQuantities(l).receiveQty, 0)}
+                            </TableCell>
+                            <TableCell className="text-right text-red-700">
+                              {receivingLines.filter(l => l.skuId && l.qty > 0).reduce((sum, l) => sum + getEffectiveQuantities(l).damageQty, 0)}
+                            </TableCell>
                             <TableCell></TableCell>
-                            <TableCell className="text-right">
-                              ${receivingLines.filter(l => l.skuId && l.qty > 0).reduce((sum, l) => sum + (l.qty * l.unitCost), 0).toFixed(2)}
+                            <TableCell className="text-right text-green-700">
+                              ${receivingLines.filter(l => l.skuId && l.qty > 0).reduce((sum, l) => {
+                                const { receiveQty } = getEffectiveQuantities(l);
+                                return sum + (receiveQty * l.unitCost);
+                              }, 0).toFixed(2)}
                             </TableCell>
                           </TableRow>
                         </TableBody>
@@ -1445,7 +1983,16 @@ export default function Receiving({ vendors, skus, layersBySku, movements, onUpd
                           {result.success ? '✓' : '✗'}
                         </span>
                         <span className="flex-1">
-                          <strong>{result.line.skuId}</strong> - {result.line.qty} units
+                          <strong>{result.line.skuId}</strong> - {(() => {
+                            const { receiveQty, damageQty } = getEffectiveQuantities(result.line);
+                            if (receiveQty > 0 && damageQty > 0) {
+                              return `${receiveQty} received, ${damageQty} damaged`;
+                            } else if (receiveQty > 0) {
+                              return `${receiveQty} units received`;
+                            } else {
+                              return `${damageQty} units damaged (full loss)`;
+                            }
+                          })()}
                           {result.error && <div className="text-xs mt-1">Error: {result.error}</div>}
                         </span>
                       </div>
@@ -1562,6 +2109,18 @@ export default function Receiving({ vendors, skus, layersBySku, movements, onUpd
           </SectionCard>
         </div>
       </div>
+
+      {/* Damage Configuration Modal */}
+      <DamageModal
+        isOpen={damageModal.isOpen}
+        onClose={closeDamageModal}
+        lineId={damageModal.lineId}
+        totalQty={damageModal.lineId ? receivingLines.find(l => l.id === damageModal.lineId)?.qty || 0 : 0}
+        currentScope={damageModal.scope}
+        currentQty={damageModal.quantity}
+        currentNotes={damageModal.notes}
+        onSave={saveDamageConfig}
+      />
     </div>
   );
 }
