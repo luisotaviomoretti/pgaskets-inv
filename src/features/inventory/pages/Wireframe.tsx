@@ -25,6 +25,8 @@ import {
 } from '@/features/inventory/services/inventory.adapter';
 import { MovementLogEntry, MovementType as MovementTypeEnum, toMovementId } from '@/features/inventory/types/inventory.types';
 import { journalSyncService } from '@/features/inventory/services/journalSyncService';
+import { journalExportManager } from '@/features/inventory/services/journalExportManager';
+import { getFeatureFlag } from '@/lib/featureFlags';
 
 // Types
 type Vendor = { id: string; name: string; address?: string; bank?: string; email?: string; phone?: string };
@@ -1558,22 +1560,51 @@ export default function InventoryWireframe() {
 
   // Export journal entries to Excel
   const exportJournalToExcel = async (filteredMovements: any[], activeFilters: any) => {
-    // Filter only applicable movement types
-    const journalMovements = filteredMovements.filter(([movement]) => 
-      ['RECEIVE', 'PRODUCE', 'WASTE'].includes(movement.type)
-    );
+    try {
+      // Filter only applicable movement types
+      const journalMovements = filteredMovements.filter(([movement]) => 
+        ['RECEIVE', 'PRODUCE', 'WASTE', 'ADJUSTMENT'].includes(movement.type)
+      );
 
-    if (journalMovements.length === 0) {
-      toast.info('No applicable movements for journal export (RECEIVE, COGS, WASTE only)');
-      return;
-    }
+      if (journalMovements.length === 0) {
+        toast.info('No applicable movements for journal export (RECEIVE, COGS, WASTE, ADJUSTMENT only)');
+        return;
+      }
 
-    // Generate unique journal number for this export
-    const timestamp = new Date();
-    const dateStr = timestamp.toISOString().split('T')[0].replace(/-/g, '');
-    const randomSuffix = Math.floor(Math.random() * 1000).toString().padStart(3, '0');
-    const journalNo = `J-${dateStr}-${randomSuffix}`;
-    const journalDate = timestamp.toLocaleDateString('en-US');
+      // Check if enhanced tracking is enabled
+      const trackingEnabled = getFeatureFlag('JOURNAL_HISTORY_TRACKING');
+      console.log('📊 Journal export starting - Tracking enabled:', trackingEnabled);
+
+      // Use the enhanced export manager
+      const user = useAuth();
+      const exportResult = await journalExportManager.exportJournal(
+        journalMovements,
+        {
+          from: new Date(rangeStart),
+          to: new Date(rangeEnd),
+        },
+        user?.user?.email || 'user'
+      );
+
+      if (!exportResult.success) {
+        toast.error(`Export failed: ${exportResult.error}`);
+        return;
+      }
+
+      // Log enhanced features if available
+      if (exportResult.trackingEnabled && exportResult.journalNumber) {
+        console.log('📄 Journal Number:', exportResult.journalNumber);
+        console.log('📋 Export ID:', exportResult.exportId);
+        console.log('📊 Metadata:', exportResult.metadata);
+        toast.success(`Journal exported successfully! Journal #${exportResult.journalNumber}`);
+      } else {
+        toast.success('Journal exported successfully! (Legacy mode)');
+      }
+
+      // Continue with legacy Excel generation for now
+      // Generate unique journal number for this export
+      const journalNo = exportResult.journalNumber || `J-${Date.now()}`;
+      const journalDate = new Date().toLocaleDateString('en-US');
 
     // Create journal entries (2 lines per movement)
     const journalEntries: any[] = [];
@@ -1649,6 +1680,55 @@ export default function InventoryWireframe() {
             'Movement ID': movement.movementId
           });
           break;
+
+        case 'ADJUSTMENT':
+          // Inventory adjustments - opposite of RECEIVE logic
+          // Positive adjustments (increases): Debit Inventory, Credit Accounts Payable
+          // Negative adjustments (decreases): Credit Inventory, Debit Accounts Payable
+          const isIncrease = (movement.value || 0) > 0;
+          
+          if (isIncrease) {
+            // Positive adjustment - like additional receiving
+            journalEntries.push({
+              'Journal No.': journalNo,
+              'Journal Date': journalDate,
+              'Account Name': inventoryAccount,
+              'Debits': value.toFixed(2),
+              'Credits': '',
+              'Reference': `${movement.ref} - ${movement.skuOrName} (Inventory Adjustment +)`,
+              'Movement ID': movement.movementId
+            });
+            journalEntries.push({
+              'Journal No.': journalNo,
+              'Journal Date': journalDate,
+              'Account Name': 'Accounts Payable',
+              'Debits': '',
+              'Credits': value.toFixed(2),
+              'Reference': `${movement.ref} - ${movement.skuOrName} (Inventory Adjustment +)`,
+              'Movement ID': movement.movementId
+            });
+          } else {
+            // Negative adjustment - reverse of receiving
+            journalEntries.push({
+              'Journal No.': journalNo,
+              'Journal Date': journalDate,
+              'Account Name': 'Accounts Payable',
+              'Debits': value.toFixed(2),
+              'Credits': '',
+              'Reference': `${movement.ref} - ${movement.skuOrName} (Inventory Adjustment -)`,
+              'Movement ID': movement.movementId
+            });
+            journalEntries.push({
+              'Journal No.': journalNo,
+              'Journal Date': journalDate,
+              'Account Name': inventoryAccount,
+              'Debits': '',
+              'Credits': value.toFixed(2),
+              'Reference': `${movement.ref} - ${movement.skuOrName} (Inventory Adjustment -)`,
+              'Movement ID': movement.movementId
+            });
+          }
+          break;
       }
     });
 
@@ -1685,9 +1765,21 @@ export default function InventoryWireframe() {
     const exportedMovementIds = journalMovements.map(([movement]) => movement.movementId);
     markMovementsAsExported(exportedMovementIds, journalNo);
     
-    toast.success(`Exported ${journalEntries.length} journal entries (${journalMovements.length} movements) to ${filename}`, {
-      description: `Journal No: ${journalNo}`
-    });
+    // Success message based on tracking capability
+    if (exportResult.trackingEnabled && exportResult.journalNumber) {
+      toast.success(`Journal exported successfully! ${journalEntries.length} entries (${journalMovements.length} movements)`, {
+        description: `Journal #${exportResult.journalNumber} - Enhanced tracking enabled`
+      });
+    } else {
+      toast.success(`Exported ${journalEntries.length} journal entries (${journalMovements.length} movements) to ${filename}`, {
+        description: `Journal No: ${journalNo}`
+      });
+    }
+    
+    } catch (error) {
+      console.error('Export journal error:', error);
+      toast.error(`Export failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
   };
 
   // Flatten SKUs with category for each row

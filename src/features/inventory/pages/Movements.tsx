@@ -27,12 +27,14 @@ interface MovementsProps {
 }
 
 // Movement type badge colors
-function getMovementBadgeVariant(type: MovementType): "default" | "secondary" {
+function getMovementBadgeVariant(type: MovementType): "default" | "secondary" | "destructive" {
   switch (type) {
     case MovementType.RECEIVE: return 'default';
     case MovementType.PRODUCE: return 'default';
     case MovementType.ISSUE: return 'secondary';
     case MovementType.WASTE: return 'secondary';
+    case MovementType.DAMAGE: return 'destructive';
+    case MovementType.ADJUSTMENT: return 'destructive'; // Red for adjustments (typically negative)
     default: return 'secondary';
   }
 }
@@ -667,6 +669,7 @@ export default function Movements({ movements = [], onDeleteMovement, onExportEx
                 <SelectItem value={MovementType.ISSUE}>MATERIAL USAGE</SelectItem>
                 <SelectItem value={MovementType.WASTE}>WASTE</SelectItem>
                 <SelectItem value={MovementType.PRODUCE}>COGS</SelectItem>
+                <SelectItem value={MovementType.ADJUSTMENT}>ADJUSTMENT</SelectItem>
               </SelectContent>
             </Select>
           </div>
@@ -734,10 +737,16 @@ export default function Movements({ movements = [], onDeleteMovement, onExportEx
                             </TableCell>
                             <TableCell>{m.skuOrName}</TableCell>
                             <TableCell>
-                              {m.type === MovementType.RECEIVE ? (m.qty > 0 ? `+${m.qty}` : m.qty) : Math.abs(m.qty)}
+                              {m.type === MovementType.RECEIVE ? (m.qty > 0 ? `+${m.qty}` : m.qty) 
+                               : m.type === MovementType.ADJUSTMENT ? (m.qty > 0 ? `+${m.qty}` : m.qty)
+                               : Math.abs(m.qty)}
                             </TableCell>
-                            <TableCell className={m.type === MovementType.RECEIVE ? (m.value > 0 ? 'text-green-600' : 'text-red-600') : ''}>
-                              {m.type === MovementType.RECEIVE ? currencyFmt.format(m.value) : currencyFmt.format(Math.abs(m.value))}
+                            <TableCell className={m.type === MovementType.RECEIVE ? (m.value > 0 ? 'text-green-600' : 'text-red-600') 
+                                                   : m.type === MovementType.ADJUSTMENT ? (m.value > 0 ? 'text-green-600' : 'text-red-600') 
+                                                   : ''}>
+                              {m.type === MovementType.RECEIVE ? currencyFmt.format(m.value) 
+                               : m.type === MovementType.ADJUSTMENT ? currencyFmt.format(m.value)
+                               : currencyFmt.format(Math.abs(m.value))}
                             </TableCell>
                             <TableCell>{m.ref}</TableCell>
                             <TableCell>

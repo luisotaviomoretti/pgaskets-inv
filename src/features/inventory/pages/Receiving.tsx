@@ -38,13 +38,14 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Textarea } from '@/components/ui/textarea';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Layers, Package, Plus, Minus } from '@/components/ui/icons';
+import AdjustmentModal from '@/features/inventory/components/AdjustmentModal';
 import {
   UISKUOption as SKU,
   LayerLite as Layer,
   VendorSuggestion as Vendor,
   toVendorId,
 } from '@/features/inventory/types/inventory.types';
-import { processReceiving, getFIFOLayers, movementOperations } from '@/features/inventory/services/inventory.adapter';
+import { processReceiving, getFIFOLayers, movementOperations, fifoOperations } from '@/features/inventory/services/inventory.adapter';
 import { 
   formatUSD, 
   parseUSDInput, 
@@ -107,10 +108,10 @@ interface ReceivingProps {
   vendors: Vendor[];
   skus: SKU[];
   layersBySku: Record<string, Layer[]>;
-  movements?: Array<{ datetime: string; type: 'RECEIVE' | 'ISSUE' | 'DAMAGE' | 'PRODUCE'; skuOrName: string; qty: number; value: number; ref: string; notes?: string; generalNotes?: string; damageNotes?: string }>;
+  movements?: Array<{ datetime: string; type: 'RECEIVE' | 'ISSUE' | 'DAMAGE' | 'PRODUCE' | 'ADJUSTMENT'; skuOrName: string; qty: number; value: number; ref: string; notes?: string; generalNotes?: string; damageNotes?: string }>;
   onUpdateLayers?: (skuId: string, newLayers: Layer[]) => void;
   onUpdateSKU?: (skuId: string, updates: Partial<SKU>) => void;
-  onAddMovement?: (movement: { datetime: string; type: 'RECEIVE' | 'ISSUE' | 'DAMAGE' | 'PRODUCE'; skuOrName: string; qty: number; value: number; ref: string; notes?: string; generalNotes?: string; damageNotes?: string }) => void;
+  onAddMovement?: (movement: { datetime: string; type: 'RECEIVE' | 'ISSUE' | 'DAMAGE' | 'PRODUCE' | 'ADJUSTMENT'; skuOrName: string; qty: number; value: number; ref: string; notes?: string; generalNotes?: string; damageNotes?: string }) => void;
   onRefreshMovements?: () => void;
 }
 
@@ -645,7 +646,18 @@ export default function Receiving({ vendors, skus, layersBySku, movements, onUpd
   const [selectedLayersSku, setSelectedLayersSku] = useState<string>('');
   const [activeLayers, setActiveLayers] = useState<Layer[]>([]);
   const [isLoadingLayers, setIsLoadingLayers] = useState<boolean>(false);
-      const [showAllLayers, setShowAllLayers] = useState<boolean>(false);
+  const [showAllLayers, setShowAllLayers] = useState<boolean>(false);
+
+  // Adjustment modal state
+  const [adjustmentModal, setAdjustmentModal] = useState<{
+    isOpen: boolean;
+    layer: Layer | null;
+    skuId: string;
+  }>({
+    isOpen: false,
+    layer: null,
+    skuId: '',
+  });
 
   useEffect(() => {
     if (!selectedLayersSku) {
@@ -1094,6 +1106,64 @@ export default function Receiving({ vendors, skus, layersBySku, movements, onUpd
       .sort((a, b) => new Date(b.datetime).getTime() - new Date(a.datetime).getTime())
       .slice(0, 3);
   }, [movements]);
+
+  // Adjustment modal functions
+  const openAdjustmentModal = useCallback((layer: Layer, skuId: string) => {
+    setAdjustmentModal({
+      isOpen: true,
+      layer,
+      skuId,
+    });
+  }, []);
+
+  const closeAdjustmentModal = useCallback(() => {
+    setAdjustmentModal({
+      isOpen: false,
+      layer: null,
+      skuId: '',
+    });
+  }, []);
+
+  const handleAdjustmentConfirm = useCallback(async (params: {
+    layerId: string;
+    quantity: number;
+    reason: string;
+    notes?: string;
+    reference?: string;
+  }) => {
+    try {
+      // Create adjustment movement
+      await movementOperations.createAdjustmentMovement({
+        skuId: selectedLayersSku,
+        layerId: params.layerId,
+        quantity: params.quantity,
+        date: new Date(),
+        reference: params.reference,
+        reason: params.reason,
+        notes: params.notes,
+        adjustedBy: 'current_user', // TODO: Get from auth context
+      });
+
+      // Refresh layers to show updated quantities
+      const updatedLayers = await getFIFOLayers(selectedLayersSku);
+      setActiveLayers(updatedLayers || []);
+
+      // Refresh movements if callback provided
+      if (onRefreshMovements) {
+        onRefreshMovements();
+      }
+
+      // Show success notification
+      const adjustmentType = params.quantity > 0 ? 'increased' : 'decreased';
+      const absQuantity = Math.abs(params.quantity);
+      notify(`✓ Layer ${params.layerId} ${adjustmentType} by ${absQuantity} units`, 'success');
+
+    } catch (error: any) {
+      console.error('Error creating adjustment:', error);
+      notify(`✗ Adjustment failed: ${error.message}`, 'error');
+      throw error; // Re-throw so modal can handle error state
+    }
+  }, [selectedLayersSku, onRefreshMovements, notify]);
 
   // Focus management for errors
   const focusFirstError = () => {
@@ -2048,29 +2118,41 @@ export default function Receiving({ vendors, skus, layersBySku, movements, onUpd
                       <TableHead>Remaining qty</TableHead>
                       <TableHead>Unit cost</TableHead>
                       <TableHead>Asset Value</TableHead>
+                      <TableHead className="w-32">Actions</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
                     {isLoadingLayers ? (
                       <TableRow>
-                        <TableCell colSpan={5} className="text-center text-sm text-slate-500">Loading layers...</TableCell>
+                        <TableCell colSpan={6} className="text-center text-sm text-slate-500">Loading layers...</TableCell>
                       </TableRow>
                     ) : !selectedLayersSku ? (
                       <TableRow>
-                        <TableCell colSpan={5} className="text-center text-sm text-slate-500">Select a SKU to view its layers.</TableCell>
+                        <TableCell colSpan={6} className="text-center text-sm text-slate-500">Select a SKU to view its layers.</TableCell>
                       </TableRow>
                     ) : activeLayers.filter(l => l.remaining > 0).length === 0 ? (
                       <TableRow>
-                        <TableCell colSpan={5} className="text-center text-sm text-slate-500">No active layers found for the selected SKU.</TableCell>
+                        <TableCell colSpan={6} className="text-center text-sm text-slate-500">No active layers found for the selected SKU.</TableCell>
                       </TableRow>
                     ) : (
                       (showAllLayers ? activeLayers.filter(l => l.remaining > 0) : activeLayers.filter(l => l.remaining > 0).slice(0, 10)).map((l) => (
-                        <TableRow key={l.id}>
-                          <TableCell>{l.id}</TableCell>
+                        <TableRow key={l.id} className="hover:bg-slate-50">
+                          <TableCell className="font-mono text-xs">{l.id}</TableCell>
                           <TableCell>{typeof l.date === 'string' ? l.date : new Date(l.date).toLocaleDateString()}</TableCell>
-                          <TableCell>{l.remaining}</TableCell>
+                          <TableCell className="font-medium">{l.remaining}</TableCell>
                           <TableCell>{formatUSD(l.cost)}</TableCell>
-                          <TableCell>{formatUSD(l.remaining * l.cost)}</TableCell>
+                          <TableCell className="font-medium">{formatUSD(l.remaining * l.cost)}</TableCell>
+                          <TableCell>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => openAdjustmentModal(l, selectedLayersSku)}
+                              className="h-7 px-2 text-xs bg-blue-50 text-blue-700 border-blue-200 hover:bg-blue-100 hover:border-blue-300"
+                              title={`Adjust layer ${l.id}`}
+                            >
+                              Adjust
+                            </Button>
+                          </TableCell>
                         </TableRow>
                       ))
                     )}
@@ -2120,6 +2202,15 @@ export default function Receiving({ vendors, skus, layersBySku, movements, onUpd
         currentQty={damageModal.quantity}
         currentNotes={damageModal.notes}
         onSave={saveDamageConfig}
+      />
+
+      {/* Layer Adjustment Modal */}
+      <AdjustmentModal
+        isOpen={adjustmentModal.isOpen}
+        onClose={closeAdjustmentModal}
+        layer={adjustmentModal.layer}
+        skuId={adjustmentModal.skuId}
+        onConfirm={handleAdjustmentConfirm}
       />
     </div>
   );

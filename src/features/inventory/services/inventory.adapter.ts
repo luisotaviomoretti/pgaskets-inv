@@ -128,6 +128,10 @@ export const fifoOperations = {
 
   async getAvailableQuantity(skuId: string): Promise<number> {
     return await FifoService.getAvailableQuantity(skuId);
+  },
+
+  async getLayerAdjustmentInfo(layerId: string) {
+    return await FifoService.getLayerAdjustmentInfo(layerId);
   }
 };
 
@@ -180,6 +184,19 @@ export const movementOperations = {
     damageNotes?: string;
   }) {
     return await MovementService.createDamageMovement(params);
+  },
+
+  async createAdjustmentMovement(params: {
+    skuId: string;
+    layerId: string;
+    quantity: number; // Can be positive (increase) or negative (decrease)
+    date: Date;
+    reference?: string;
+    reason: string; // Mandatory adjustment reason
+    notes?: string;
+    adjustedBy?: string;
+  }) {
+    return await MovementService.createAdjustmentMovement(params);
   },
 
   async createProduceMovement(params: {

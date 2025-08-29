@@ -280,6 +280,133 @@ export async function executeFIFOConsumption(
 }
 
 /**
+ * Adjust quantity of a specific FIFO layer
+ * Used for inventory adjustments that target specific cost layers
+ */
+export async function adjustLayerQuantity(
+  layerId: string, 
+  adjustment: number,
+  reason: string,
+  adjustedBy?: string
+): Promise<{ success: boolean; newRemaining: number; layerExhausted: boolean }> {
+  try {
+    // Note: Using client-side transaction simulation since Supabase functions handle atomicity
+    try {
+      // Get current layer info
+      const { data: layerData, error: layerError } = await supabase
+        .from('fifo_layers')
+        .select('id, sku_id, remaining_quantity, status')
+        .eq('id', layerId)
+        .eq('status', 'ACTIVE') // Only allow adjustments to active layers
+        .single();
+
+      if (layerError) throw layerError;
+      if (!layerData) {
+        throw new Error(`FIFO layer ${layerId} not found or not active`);
+      }
+
+      const currentRemaining = layerData.remaining_quantity;
+      const newRemaining = currentRemaining + adjustment;
+
+      // Validate adjustment
+      if (newRemaining < 0) {
+        throw new Error(
+          `INSUFFICIENT_LAYER_QUANTITY: layer=${layerId}, current=${currentRemaining}, adjustment=${adjustment}`
+        );
+      }
+
+      // Determine new status based on remaining quantity
+      const newStatus = newRemaining === 0 ? 'EXHAUSTED' : 'ACTIVE';
+      const layerExhausted = newStatus === 'EXHAUSTED';
+
+      // Update layer quantity and status
+      const { error: updateError } = await supabase
+        .from('fifo_layers')
+        .update({
+          remaining_quantity: newRemaining,
+          status: newStatus,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', layerId);
+
+      if (updateError) throw updateError;
+
+      // Update SKU on_hand by recalculating from all active layers
+      const { data: totalQty, error: qtyError } = await supabase
+        .from('fifo_layers')
+        .select('remaining_quantity')
+        .eq('sku_id', layerData.sku_id)
+        .eq('status', 'ACTIVE')
+        .gt('remaining_quantity', 0);
+
+      if (qtyError) throw qtyError;
+
+      const newOnHand = (totalQty || []).reduce((sum, layer) => sum + (layer.remaining_quantity || 0), 0);
+      
+      const { error: skuUpdateError } = await supabase
+        .from('skus')
+        .update({ 
+          on_hand: newOnHand,
+          updated_at: new Date().toISOString() 
+        })
+        .eq('id', layerData.sku_id);
+
+      if (skuUpdateError) throw skuUpdateError;
+
+      return {
+        success: true,
+        newRemaining,
+        layerExhausted
+      };
+
+    } catch (error) {
+      // Re-throw error for higher level handling
+      throw error;
+    }
+  } catch (error) {
+    console.error('Error adjusting layer quantity:', error);
+    throw error;
+  }
+}
+
+/**
+ * Get layer information for adjustment validation
+ */
+export async function getLayerAdjustmentInfo(layerId: string): Promise<{
+  id: string;
+  skuId: string;
+  remaining: number;
+  cost: number;
+  status: string;
+  canAdjust: boolean;
+}> {
+  try {
+    const { data, error } = await supabase
+      .from('fifo_layers')
+      .select('id, sku_id, remaining_quantity, unit_cost, status')
+      .eq('id', layerId)
+      .single();
+
+    if (error) throw error;
+    if (!data) {
+      throw new Error(`FIFO layer ${layerId} not found`);
+    }
+
+    return {
+      id: data.id,
+      skuId: data.sku_id,
+      remaining: data.remaining_quantity,
+      cost: data.unit_cost,
+      status: data.status,
+      canAdjust: data.status === 'ACTIVE' && data.remaining_quantity > 0
+    };
+  } catch (error) {
+    console.error('Error getting layer adjustment info:', error);
+    throw error;
+  }
+}
+
+/**
  * Get layer consumption history for a movement
  */
 export async function getLayerConsumptions(movementId: number) {

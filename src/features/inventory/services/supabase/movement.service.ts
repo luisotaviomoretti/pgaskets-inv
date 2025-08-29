@@ -463,6 +463,95 @@ export async function createProduceMovement(params: {
 }
 
 /**
+ * Create ADJUSTMENT movement for FIFO layer quantity adjustments
+ */
+export async function createAdjustmentMovement(params: {
+  skuId: string;
+  layerId: string;
+  quantity: number; // Can be positive (increase) or negative (decrease)
+  date: Date;
+  reference?: string;
+  reason: string; // Mandatory adjustment reason
+  notes?: string;
+  adjustedBy?: string;
+}): Promise<MovementWithDetails> {
+  try {
+    // Import FIFO functions
+    const { adjustLayerQuantity, getLayerAdjustmentInfo } = await import('./fifo.service');
+    
+    // Validate layer can be adjusted
+    const layerInfo = await getLayerAdjustmentInfo(params.layerId);
+    
+    if (!layerInfo.canAdjust) {
+      throw new Error(`Cannot adjust layer ${params.layerId}: status=${layerInfo.status}, remaining=${layerInfo.remaining}`);
+    }
+
+    if (layerInfo.skuId !== params.skuId) {
+      throw new Error(`Layer ${params.layerId} belongs to SKU ${layerInfo.skuId}, not ${params.skuId}`);
+    }
+
+    // Validate adjustment quantity
+    if (params.quantity === 0) {
+      throw new Error('Adjustment quantity cannot be zero');
+    }
+
+    if (params.quantity < 0 && Math.abs(params.quantity) > layerInfo.remaining) {
+      throw new Error(
+        `Insufficient quantity in layer: available=${layerInfo.remaining}, requested=${Math.abs(params.quantity)}`
+      );
+    }
+
+    try {
+      // Create movement record first
+      const adjustmentValue = params.quantity * layerInfo.cost;
+      const movementData: MovementInsert = {
+        type: 'ADJUSTMENT',
+        sku_id: params.skuId,
+        quantity: params.quantity, // Positive for increases, negative for decreases
+        unit_cost: layerInfo.cost,
+        total_value: adjustmentValue,
+        datetime: params.date.toISOString(),
+        reference: params.reference || `ADJ-${Date.now()}-${params.layerId}`,
+        notes: `Layer Adjustment: ${params.reason}${params.notes ? ` | ${params.notes}` : ''}`,
+      };
+
+      const { data: movement, error: movementError } = await supabase
+        .from('movements')
+        .insert(movementData)
+        .select(`
+          *,
+          skus (id, description, unit),
+          vendors (name)
+        `)
+        .single();
+
+      if (movementError) throw movementError;
+
+      // Adjust the specific FIFO layer
+      const adjustmentResult = await adjustLayerQuantity(
+        params.layerId,
+        params.quantity,
+        params.reason,
+        params.adjustedBy
+      );
+
+      if (!adjustmentResult.success) {
+        throw new Error('Failed to adjust layer quantity');
+      }
+
+      return mapMovementRowToUI(movement);
+
+    } catch (error) {
+      console.error('Error within createAdjustmentMovement flow:', error);
+      throw error;
+    }
+  } catch (error) {
+    console.error('Error creating adjustment movement:', error);
+    throw error;
+  }
+}
+
+/**
  * Get movement by ID with details
  */
 export async function getMovementById(id: number): Promise<MovementWithDetails | null> {
