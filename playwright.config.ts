@@ -1,4 +1,8 @@
 import { defineConfig, devices } from '@playwright/test';
+import dotenv from 'dotenv';
+
+// Load test environment variables
+dotenv.config({ path: '.env.test' });
 
 /**
  * See https://playwright.dev/docs/test-configuration.
@@ -32,6 +36,12 @@ export default defineConfig({
     
     /* Video recording */
     video: 'retain-on-failure',
+    
+    /* Test credentials from environment */
+    extraHTTPHeaders: {
+      'x-test-email': process.env.TEST_EMAIL || 'admin@pgaskets.com',
+      'x-test-password': process.env.TEST_PASSWORD || 'pgaskets123',
+    },
   },
 
   /* Configure projects for major browsers */

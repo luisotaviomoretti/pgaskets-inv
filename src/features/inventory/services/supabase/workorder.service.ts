@@ -52,6 +52,73 @@ export interface WorkOrderResult {
   // validation?: WorkOrderValidationResult; // Temporarily disabled
 }
 
+// ------------------------------
+// Concurrency helpers (Retry & Idempotency)
+// ------------------------------
+const RETRIABLE_PG_CODES = new Set(['40001', '40P01', '55P03']);
+
+function isRetriableError(err: any): boolean {
+  const code = err?.code || err?.details || err?.hint;
+  const msg = String(err?.message || err?.details || '').toLowerCase();
+  return (
+    (code && RETRIABLE_PG_CODES.has(code)) ||
+    msg.includes('could not serialize') ||
+    msg.includes('deadlock') ||
+    msg.includes('lock not available')
+  );
+}
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function rpcWithRetry<T>(exec: () => Promise<{ data: T | null; error: any }>, maxRetries = 3, baseDelayMs = 100): Promise<T> {
+  let attempt = 0;
+  let lastError: any = null;
+  while (attempt < maxRetries) {
+    const { data, error } = await exec();
+    if (!error) {
+      // data may be null if RPC returns void; caller should handle
+      return data as T;
+    }
+    lastError = error;
+    if (!isRetriableError(error)) {
+      throw error;
+    }
+    // exponential backoff: 100, 200, 400ms ...
+    const delay = baseDelayMs * Math.pow(2, attempt);
+    // eslint-disable-next-line no-console
+    console.warn(`[rpcWithRetry] Retriable error (attempt ${attempt + 1}/${maxRetries}):`, error?.code || error?.message);
+    await sleep(delay);
+    attempt++;
+  }
+  throw lastError || new Error('RPC failed after retries');
+}
+
+async function findExistingWorkOrderByReference(reference?: string, outputName?: string, outputQty?: number) {
+  try {
+    if (!reference) return null;
+    let query = supabase
+      .from('work_orders')
+      .select('*')
+      .eq('invoice_no', reference)
+      .order('created_at', { ascending: false })
+      .limit(1);
+
+    if (outputName) query = query.eq('output_name', outputName);
+    if (typeof outputQty === 'number' && !Number.isNaN(outputQty)) query = query.eq('output_quantity', outputQty);
+
+    const { data, error } = await query;
+    if (error) handleSupabaseError(error);
+    if (!data || data.length === 0) return null;
+    return data[0];
+  } catch (e) {
+    // eslint-disable-next-line no-console
+    console.warn('[findExistingWorkOrderByReference] lookup failed:', e);
+    return null;
+  }
+}
+
 /**
  * Calculate multi-SKU FIFO plans for work order
  */
@@ -160,7 +227,31 @@ export async function createWorkOrder(params: WorkOrderParams): Promise<WorkOrde
       materials: allMaterials
     });
 
-    // Call transactional RPC
+    // Idempotency soft-check: if a work order with this external reference already exists, return it
+    const existingWO = await findExistingWorkOrderByReference(params.reference, params.outputName, params.outputQuantity);
+    if (existingWO) {
+      // Compute plans to keep return shape consistent with UI expectations
+      const fifoPlans = await calculateWorkOrderFIFOPlans(params.rawMaterials, params.wasteLines);
+      return {
+        workOrderId: existingWO.id,
+        totalRawCost: fifoPlans.totalRawCost,
+        totalWasteCost: fifoPlans.totalWasteCost,
+        outputUnitCost: fifoPlans.totalRawCost > 0 && params.outputQuantity > 0 ? (fifoPlans.totalRawCost - fifoPlans.totalWasteCost) / params.outputQuantity : 0,
+        rawPlans: fifoPlans.rawPlans,
+        wastePlans: fifoPlans.wastePlans,
+        // extra details to maintain compatibility
+        netProduceCost: (fifoPlans.totalRawCost - fifoPlans.totalWasteCost),
+        details: {
+          rawCost: fifoPlans.totalRawCost,
+          wasteCost: fifoPlans.totalWasteCost,
+          netCost: (fifoPlans.totalRawCost - fifoPlans.totalWasteCost),
+          unitCost: fifoPlans.totalRawCost > 0 && params.outputQuantity > 0 ? (fifoPlans.totalRawCost - fifoPlans.totalWasteCost) / params.outputQuantity : 0,
+          consumptions: []
+        }
+      } as any;
+    }
+
+    // Call transactional RPC (with retry for serialization/deadlock/lock errors)
     const rpcParams = {
       p_output_name: params.outputName,
       p_output_quantity: params.outputQuantity,
@@ -174,12 +265,33 @@ export async function createWorkOrder(params: WorkOrderParams): Promise<WorkOrde
 
     console.log('RPC parameters:', rpcParams);
 
-    const { data: result, error } = await supabase.rpc('create_work_order_transaction', rpcParams);
-
-    if (error) {
-      console.error('Error creating work order via RPC:', error);
-      console.error('Error details:', JSON.stringify(error, null, 2));
-      throw error;
+    let result: any;
+    try {
+      result = await rpcWithRetry<any>(() => supabase.rpc('create_work_order_transaction', rpcParams), 3, 100);
+    } catch (err) {
+      console.error('Error creating work order via RPC (after retries):', err);
+      // As a last attempt for idempotency, check again by reference (in case first attempt actually succeeded but reply failed)
+      const fallbackWO = await findExistingWorkOrderByReference(params.reference, params.outputName, params.outputQuantity);
+      if (fallbackWO) {
+        const fifoPlans = await calculateWorkOrderFIFOPlans(params.rawMaterials, params.wasteLines);
+        return {
+          workOrderId: fallbackWO.id,
+          totalRawCost: fifoPlans.totalRawCost,
+          totalWasteCost: fifoPlans.totalWasteCost,
+          outputUnitCost: fifoPlans.totalRawCost > 0 && params.outputQuantity > 0 ? (fifoPlans.totalRawCost - fifoPlans.totalWasteCost) / params.outputQuantity : 0,
+          rawPlans: fifoPlans.rawPlans,
+          wastePlans: fifoPlans.wastePlans,
+          netProduceCost: (fifoPlans.totalRawCost - fifoPlans.totalWasteCost),
+          details: {
+            rawCost: fifoPlans.totalRawCost,
+            wasteCost: fifoPlans.totalWasteCost,
+            netCost: (fifoPlans.totalRawCost - fifoPlans.totalWasteCost),
+            unitCost: fifoPlans.totalRawCost > 0 && params.outputQuantity > 0 ? (fifoPlans.totalRawCost - fifoPlans.totalWasteCost) / params.outputQuantity : 0,
+            consumptions: []
+          }
+        } as any;
+      }
+      throw err;
     }
 
     if (!result?.success) {

@@ -306,7 +306,7 @@ export default function Movements({ movements = [], onDeleteMovement, onExportEx
   // Filter movements applicable for journal (RECEIVE, COGS, WASTE) with export tracking
   const journalApplicableMovements = useMemo(() => {
     const applicableMovements = filteredMovements.filter(([movement]) => 
-      [MovementType.RECEIVE, MovementType.PRODUCE, MovementType.WASTE].includes(movement.type)
+      [MovementType.RECEIVE, MovementType.PRODUCE, MovementType.WASTE, MovementType.ADJUSTMENT].includes(movement.type)
     );
 
     if (includeExportedMovements || !getExportedMovements) {
@@ -323,7 +323,7 @@ export default function Movements({ movements = [], onDeleteMovement, onExportEx
   // Calculate movement counts for display
   const movementCounts = useMemo(() => {
     const allApplicable = filteredMovements.filter(([movement]) => 
-      [MovementType.RECEIVE, MovementType.PRODUCE, MovementType.WASTE].includes(movement.type)
+      [MovementType.RECEIVE, MovementType.PRODUCE, MovementType.WASTE, MovementType.ADJUSTMENT].includes(movement.type)
     );
     
     if (!getExportedMovements) {

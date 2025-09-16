@@ -1,0 +1,502 @@
+{
+  "config": {
+    "configFile": "C:\\Users\\luiso\\OneDrive\\Documentos\\Windsurf Codes\\pgasketsinv-final\\playwright.config.ts",
+    "rootDir": "C:/Users/luiso/OneDrive/Documentos/Windsurf Codes/pgasketsinv-final/tests",
+    "forbidOnly": false,
+    "fullyParallel": true,
+    "globalSetup": null,
+    "globalTeardown": null,
+    "globalTimeout": 0,
+    "grep": {},
+    "grepInvert": null,
+    "maxFailures": 0,
+    "metadata": {
+      "actualWorkers": 4
+    },
+    "preserveOutput": "always",
+    "reporter": [
+      [
+        "list",
+        null
+      ],
+      [
+        "html",
+        null
+      ],
+      [
+        "json",
+        {
+          "outputFile": "test-results/results.json"
+        }
+      ]
+    ],
+    "reportSlowTests": {
+      "max": 5,
+      "threshold": 300000
+    },
+    "quiet": false,
+    "projects": [
+      {
+        "outputDir": "C:/Users/luiso/OneDrive/Documentos/Windsurf Codes/pgasketsinv-final/test-results",
+        "repeatEach": 1,
+        "retries": 0,
+        "metadata": {
+          "actualWorkers": 4
+        },
+        "id": "chromium",
+        "name": "chromium",
+        "testDir": "C:/Users/luiso/OneDrive/Documentos/Windsurf Codes/pgasketsinv-final/tests",
+        "testIgnore": [],
+        "testMatch": [
+          "**/*.@(spec|test).?(c|m)[jt]s?(x)"
+        ],
+        "timeout": 60000
+      },
+      {
+        "outputDir": "C:/Users/luiso/OneDrive/Documentos/Windsurf Codes/pgasketsinv-final/test-results",
+        "repeatEach": 1,
+        "retries": 0,
+        "metadata": {
+          "actualWorkers": 4
+        },
+        "id": "firefox",
+        "name": "firefox",
+        "testDir": "C:/Users/luiso/OneDrive/Documentos/Windsurf Codes/pgasketsinv-final/tests",
+        "testIgnore": [],
+        "testMatch": [
+          "**/*.@(spec|test).?(c|m)[jt]s?(x)"
+        ],
+        "timeout": 60000
+      },
+      {
+        "outputDir": "C:/Users/luiso/OneDrive/Documentos/Windsurf Codes/pgasketsinv-final/test-results",
+        "repeatEach": 1,
+        "retries": 0,
+        "metadata": {
+          "actualWorkers": 4
+        },
+        "id": "webkit",
+        "name": "webkit",
+        "testDir": "C:/Users/luiso/OneDrive/Documentos/Windsurf Codes/pgasketsinv-final/tests",
+        "testIgnore": [],
+        "testMatch": [
+          "**/*.@(spec|test).?(c|m)[jt]s?(x)"
+        ],
+        "timeout": 60000
+      },
+      {
+        "outputDir": "C:/Users/luiso/OneDrive/Documentos/Windsurf Codes/pgasketsinv-final/test-results",
+        "repeatEach": 1,
+        "retries": 0,
+        "metadata": {
+          "actualWorkers": 4
+        },
+        "id": "Mobile Chrome",
+        "name": "Mobile Chrome",
+        "testDir": "C:/Users/luiso/OneDrive/Documentos/Windsurf Codes/pgasketsinv-final/tests",
+        "testIgnore": [],
+        "testMatch": [
+          "**/*.@(spec|test).?(c|m)[jt]s?(x)"
+        ],
+        "timeout": 60000
+      },
+      {
+        "outputDir": "C:/Users/luiso/OneDrive/Documentos/Windsurf Codes/pgasketsinv-final/test-results",
+        "repeatEach": 1,
+        "retries": 0,
+        "metadata": {
+          "actualWorkers": 4
+        },
+        "id": "Mobile Safari",
+        "name": "Mobile Safari",
+        "testDir": "C:/Users/luiso/OneDrive/Documentos/Windsurf Codes/pgasketsinv-final/tests",
+        "testIgnore": [],
+        "testMatch": [
+          "**/*.@(spec|test).?(c|m)[jt]s?(x)"
+        ],
+        "timeout": 60000
+      },
+      {
+        "outputDir": "C:/Users/luiso/OneDrive/Documentos/Windsurf Codes/pgasketsinv-final/test-results",
+        "repeatEach": 1,
+        "retries": 0,
+        "metadata": {
+          "actualWorkers": 4
+        },
+        "id": "Microsoft Edge",
+        "name": "Microsoft Edge",
+        "testDir": "C:/Users/luiso/OneDrive/Documentos/Windsurf Codes/pgasketsinv-final/tests",
+        "testIgnore": [],
+        "testMatch": [
+          "**/*.@(spec|test).?(c|m)[jt]s?(x)"
+        ],
+        "timeout": 60000
+      },
+      {
+        "outputDir": "C:/Users/luiso/OneDrive/Documentos/Windsurf Codes/pgasketsinv-final/test-results",
+        "repeatEach": 1,
+        "retries": 0,
+        "metadata": {
+          "actualWorkers": 4
+        },
+        "id": "Google Chrome",
+        "name": "Google Chrome",
+        "testDir": "C:/Users/luiso/OneDrive/Documentos/Windsurf Codes/pgasketsinv-final/tests",
+        "testIgnore": [],
+        "testMatch": [
+          "**/*.@(spec|test).?(c|m)[jt]s?(x)"
+        ],
+        "timeout": 60000
+      }
+    ],
+    "shard": null,
+    "updateSnapshots": "missing",
+    "updateSourceMethod": "patch",
+    "version": "1.55.0",
+    "workers": 4,
+    "webServer": {
+      "command": "npm run dev",
+      "url": "http://localhost:5173",
+      "reuseExistingServer": true,
+      "timeout": 120000
+    }
+  },
+  "suites": [
+    {
+      "title": "performance-simple.spec.ts",
+      "file": "performance-simple.spec.ts",
+      "column": 0,
+      "line": 0,
+      "specs": [
+        {
+          "title": "📋 Performance Summary Report",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 60000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "chromium",
+              "projectName": "chromium",
+              "results": [
+                {
+                  "workerIndex": 0,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 3691,
+                  "errors": [],
+                  "stdout": [
+                    {
+                      "text": "\\n📋 FINAL PERFORMANCE REPORT\n"
+                    },
+                    {
+                      "text": "============================================================\n"
+                    },
+                    {
+                      "text": "\\n📊 LOGIN PAGE PERFORMANCE: 🟡 Good\n"
+                    },
+                    {
+                      "text": "   Load Time: 2527ms\n"
+                    },
+                    {
+                      "text": "   JS Bundle: 2.45MB (15 files)\n"
+                    },
+                    {
+                      "text": "   Status: ✅ PASSED\n"
+                    },
+                    {
+                      "text": "\\n🎯 RECOMMENDATIONS:\n"
+                    },
+                    {
+                      "text": "   • JavaScript bundle is large (>2MB)\n"
+                    },
+                    {
+                      "text": "   • Consider lazy loading non-critical code\n"
+                    },
+                    {
+                      "text": "\\n============================================================\n"
+                    },
+                    {
+                      "text": "🏆 PERFORMANCE TEST COMPLETED\n"
+                    }
+                  ],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2025-08-29T14:04:24.886Z",
+                  "annotations": [],
+                  "attachments": []
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "4a0d35c9f84beddf30fe-e99f7e284d0d76bd513a",
+          "file": "performance-simple.spec.ts",
+          "line": 185,
+          "column": 1
+        }
+      ],
+      "suites": [
+        {
+          "title": "Site Performance Tests",
+          "file": "performance-simple.spec.ts",
+          "line": 13,
+          "column": 6,
+          "specs": [
+            {
+              "title": "📊 Page Load Performance Report",
+              "ok": true,
+              "tags": [],
+              "tests": [
+                {
+                  "timeout": 60000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "results": [
+                    {
+                      "workerIndex": 0,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 5622,
+                      "errors": [],
+                      "stdout": [
+                        {
+                          "text": "\\n🚀 TESTING SITE PERFORMANCE\n"
+                        },
+                        {
+                          "text": "==================================================\n"
+                        },
+                        {
+                          "text": "📝 Login Page Load: 3081ms\n"
+                        },
+                        {
+                          "text": "💾 JavaScript Bundle: 2.45MB (15 files)\n"
+                        },
+                        {
+                          "text": "📦 Total Resources: 52\n"
+                        },
+                        {
+                          "text": "🧠 Memory Usage: 23.37MB / 42.63MB\n"
+                        },
+                        {
+                          "text": "✅ Login page performance test passed!\n"
+                        }
+                      ],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2025-08-29T14:04:18.838Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "4a0d35c9f84beddf30fe-e3ca051beb2a8a5b952a",
+              "file": "performance-simple.spec.ts",
+              "line": 14,
+              "column": 3
+            },
+            {
+              "title": "🔐 Authentication Performance",
+              "ok": true,
+              "tags": [],
+              "tests": [
+                {
+                  "timeout": 60000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "results": [
+                    {
+                      "workerIndex": 1,
+                      "parallelIndex": 1,
+                      "status": "passed",
+                      "duration": 7780,
+                      "errors": [],
+                      "stdout": [
+                        {
+                          "text": "\\n🔐 TESTING AUTHENTICATION PERFORMANCE\n"
+                        },
+                        {
+                          "text": "⚡ Authentication completed in: 3058ms\n"
+                        },
+                        {
+                          "text": "✅ Authentication performance test passed!\n"
+                        }
+                      ],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2025-08-29T14:04:18.802Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "4a0d35c9f84beddf30fe-de4a3d0d2267f2dcaf2c",
+              "file": "performance-simple.spec.ts",
+              "line": 70,
+              "column": 3
+            },
+            {
+              "title": "🏠 Dashboard Performance",
+              "ok": true,
+              "tags": [],
+              "tests": [
+                {
+                  "timeout": 60000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "results": [
+                    {
+                      "workerIndex": 2,
+                      "parallelIndex": 2,
+                      "status": "passed",
+                      "duration": 9658,
+                      "errors": [],
+                      "stdout": [
+                        {
+                          "text": "\\n🏠 TESTING DASHBOARD PERFORMANCE\n"
+                        },
+                        {
+                          "text": "📊 Dashboard Load Time: 2998ms\n"
+                        },
+                        {
+                          "text": "🎯 UI Elements: 5 tables, 30 buttons, 13 inputs\n"
+                        },
+                        {
+                          "text": "📐 Total DOM nodes: 619\n"
+                        },
+                        {
+                          "text": "✅ Dashboard performance test passed!\n"
+                        }
+                      ],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2025-08-29T14:04:18.785Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "4a0d35c9f84beddf30fe-93baf6700b07fea3d60f",
+              "file": "performance-simple.spec.ts",
+              "line": 103,
+              "column": 3
+            },
+            {
+              "title": "⌨️ Form Interaction Performance",
+              "ok": true,
+              "tags": [],
+              "tests": [
+                {
+                  "timeout": 60000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "results": [
+                    {
+                      "workerIndex": 3,
+                      "parallelIndex": 3,
+                      "status": "passed",
+                      "duration": 4883,
+                      "errors": [],
+                      "stdout": [
+                        {
+                          "text": "\\n⌨️ TESTING FORM INTERACTIONS\n"
+                        },
+                        {
+                          "text": "📝 Email field: 175ms\n"
+                        },
+                        {
+                          "text": "📝 Password field: 34ms\n"
+                        },
+                        {
+                          "text": "✅ Form interaction performance test passed!\n"
+                        }
+                      ],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2025-08-29T14:04:18.861Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "4a0d35c9f84beddf30fe-e50c35e043ec9efd0f40",
+              "file": "performance-simple.spec.ts",
+              "line": 136,
+              "column": 3
+            },
+            {
+              "title": "🧭 Navigation Performance",
+              "ok": true,
+              "tags": [],
+              "tests": [
+                {
+                  "timeout": 60000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "results": [
+                    {
+                      "workerIndex": 3,
+                      "parallelIndex": 3,
+                      "status": "passed",
+                      "duration": 5329,
+                      "errors": [],
+                      "stdout": [
+                        {
+                          "text": "\\n🧭 TESTING NAVIGATION PERFORMANCE\n"
+                        },
+                        {
+                          "text": "🚀 Dashboard navigation: 1295ms\n"
+                        },
+                        {
+                          "text": "✅ Navigation performance test passed!\n"
+                        }
+                      ],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2025-08-29T14:04:24.279Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "4a0d35c9f84beddf30fe-b45870a9e4ae7a76ad03",
+              "file": "performance-simple.spec.ts",
+              "line": 160,
+              "column": 3
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "errors": [],
+  "stats": {
+    "startTime": "2025-08-29T14:04:16.663Z",
+    "duration": 13329.422999999999,
+    "expected": 6,
+    "skipped": 0,
+    "unexpected": 0,
+    "flaky": 0
+  }
+}

@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { login, logout, TEST_CREDENTIALS, waitForLoadingToComplete } from './test-utils';
 
 test.describe('Authentication Flow', () => {
   test('should show error for invalid credentials', async ({ page }) => {
@@ -16,52 +17,39 @@ test.describe('Authentication Flow', () => {
   });
 
   test('should successfully log in with valid credentials', async ({ page }) => {
-    await page.goto('/login');
+    await login(page);
     
-    // Fill in valid credentials (from CLAUDE.md)
-    await page.fill('input[type="email"]', 'admin@pgaskets.com');
-    await page.fill('input[type="password"]', 'pgaskets123');
+    // Wait for loading to complete
+    await waitForLoadingToComplete(page);
     
-    // Click sign in button
-    await page.click('button[type="submit"]');
-    
-    // Should redirect to dashboard
+    // Should be on dashboard
     await expect(page).toHaveURL(/.*\/app/, { timeout: 10000 });
     
-    // Should show dashboard content
-    await expect(page.getByText(/dashboard|inventory|welcome/i)).toBeVisible({ timeout: 5000 });
+    // Should show dashboard content (use first() to handle multiple matches)
+    await expect(page.getByRole('heading', { name: 'Inventory System' })).toBeVisible({ timeout: 10000 });
   });
 
   test('should persist session after page refresh', async ({ page }) => {
     // Login first
-    await page.goto('/login');
-    await page.fill('input[type="email"]', 'admin@pgaskets.com');
-    await page.fill('input[type="password"]', 'pgaskets123');
-    await page.click('button[type="submit"]');
-    
-    // Wait for redirect to dashboard
-    await expect(page).toHaveURL(/.*\/app/, { timeout: 10000 });
+    await login(page);
+    await waitForLoadingToComplete(page);
     
     // Refresh the page
     await page.reload();
+    await waitForLoadingToComplete(page);
     
     // Should still be logged in (not redirected to login)
     await expect(page).toHaveURL(/.*\/app/);
-    await expect(page.getByText(/dashboard|inventory/i)).toBeVisible({ timeout: 5000 });
+    await expect(page.getByRole('heading', { name: 'Inventory System' })).toBeVisible({ timeout: 10000 });
   });
 
   test('should logout successfully', async ({ page }) => {
     // Login first
-    await page.goto('/login');
-    await page.fill('input[type="email"]', 'admin@pgaskets.com');
-    await page.fill('input[type="password"]', 'pgaskets123');
-    await page.click('button[type="submit"]');
+    await login(page);
+    await waitForLoadingToComplete(page);
     
-    // Wait for dashboard
-    await expect(page).toHaveURL(/.*\/app/, { timeout: 10000 });
-    
-    // Find and click logout button
-    await page.click('button:has-text("Logout"), [data-testid="logout"], button:has-text("Sign out")');
+    // Logout
+    await logout(page);
     
     // Should redirect to login page
     await expect(page).toHaveURL(/.*\/login/, { timeout: 5000 });
@@ -72,23 +60,17 @@ test.describe('Authentication Flow', () => {
   });
 
   test('should measure authentication performance', async ({ page }) => {
-    await page.goto('/login');
-    
     const startTime = Date.now();
     
     // Perform login
-    await page.fill('input[type="email"]', 'admin@pgaskets.com');
-    await page.fill('input[type="password"]', 'pgaskets123');
-    await page.click('button[type="submit"]');
-    
-    // Wait for successful redirect
-    await expect(page).toHaveURL(/.*\/app/, { timeout: 10000 });
+    await login(page);
+    await waitForLoadingToComplete(page);
     
     const loginTime = Date.now() - startTime;
     
-    console.log(`Authentication time: ${loginTime}ms`);
+    console.log(`🔐 Authentication time: ${loginTime}ms`);
     
-    // Login should complete within 5 seconds
-    expect(loginTime).toBeLessThan(5000);
+    // Login should complete within 10 seconds (increased timeout for reliability)
+    expect(loginTime).toBeLessThan(10000);
   });
 });

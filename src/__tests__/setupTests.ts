@@ -1,5 +1,7 @@
-import '@testing-library/jest-dom';
-import { beforeAll, afterAll, afterEach, vi } from 'vitest';
+import { beforeAll, afterAll, afterEach, vi, expect } from 'vitest';
+import * as matchers from '@testing-library/jest-dom/matchers';
+
+expect.extend(matchers);
 import { server } from './testServer';
 
 // MSW: start/stop/reset

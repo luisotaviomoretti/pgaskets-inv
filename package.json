@@ -1,4 +1,5 @@
 {
+  "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
@@ -9,8 +10,9 @@
     "test:playwright": "playwright test",
     "test:playwright:ui": "playwright test --ui",
     "test:playwright:report": "playwright show-report",
-    "test:performance": "playwright test --grep=\"Performance|performance\"",
-    "test:auth": "playwright test --grep=\"Authentication|auth\"",
+    "test:performance": "playwright test tests/performance-simple.spec.ts --project=chromium --timeout=60000",
+    "test:performance:full": "playwright test tests/performance-comprehensive.spec.ts --project=chromium --timeout=60000",
+    "test:performance:auth": "playwright test --grep=\"Authentication|auth\" --timeout 30000",
     "test:all": "npm run test && npm run test:playwright"
   },
   "dependencies": {
@@ -44,6 +46,8 @@
     "@types/react-dom": "^19.1.7",
     "@vitejs/plugin-react-swc": "^3.6.0",
     "@vitest/ui": "^3.2.4",
+    "dotenv": "^17.2.1",
+    "jsdom": "^27.0.0",
     "msw": "^2.10.5",
     "vite": "^7.1.2",
     "vitest": "^3.2.4"

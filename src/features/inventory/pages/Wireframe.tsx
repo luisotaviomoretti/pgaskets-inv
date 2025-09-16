@@ -1562,7 +1562,7 @@ export default function InventoryWireframe() {
   const exportJournalToExcel = async (filteredMovements: any[], activeFilters: any) => {
     try {
       // Filter only applicable movement types
-      const journalMovements = filteredMovements.filter(([movement]) => 
+      const journalMovements = filteredMovements.filter(([movement]) =>
         ['RECEIVE', 'PRODUCE', 'WASTE', 'ADJUSTMENT'].includes(movement.type)
       );
 
@@ -1575,15 +1575,17 @@ export default function InventoryWireframe() {
       const trackingEnabled = getFeatureFlag('JOURNAL_HISTORY_TRACKING');
       console.log('📊 Journal export starting - Tracking enabled:', trackingEnabled);
 
+      // Compute date range for this export
+      const [rangeStart, rangeEnd] = getRange(period, customStart, customEnd);
+
       // Use the enhanced export manager
-      const user = useAuth();
       const exportResult = await journalExportManager.exportJournal(
         journalMovements,
         {
           from: new Date(rangeStart),
           to: new Date(rangeEnd),
         },
-        user?.user?.email || 'user'
+        user?.email || 'user'
       );
 
       if (!exportResult.success) {
