@@ -41,7 +41,7 @@ const getDefaultFlags = (): FeatureFlags => {
     JOURNAL_AUTO_SYNC: false,              // Future release
 
     // Inventory features
-    INVENTORY_CATEGORIES: isDev,           // Enabled only in development for safe rollout
+    INVENTORY_CATEGORIES: true,            // Now enabled in production
   };
 };
 
