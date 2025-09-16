@@ -29,6 +29,29 @@ function mapSKURowToUIOption(row: SKURow): UISKUOption {
 }
 
 /**
+ * Count SKUs by category (optionally only active)
+ */
+export async function countSKUsByCategory(categoryName: string, options?: { activeOnly?: boolean }): Promise<number> {
+  try {
+    let query = supabase
+      .from('skus')
+      .select('id', { count: 'exact', head: true })
+      .eq('product_category', categoryName);
+
+    if (options?.activeOnly) {
+      query = query.eq('active', true);
+    }
+
+    const { count, error } = await query;
+    if (error) handleSupabaseError(error);
+    return count ?? 0;
+  } catch (error) {
+    console.error('Error counting SKUs by category:', error);
+    throw error;
+  }
+}
+
+/**
  * Get all SKUs with optional filtering
  */
 export async function getSKUs(filters?: {

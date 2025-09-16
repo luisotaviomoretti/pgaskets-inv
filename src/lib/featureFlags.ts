@@ -16,6 +16,9 @@ export interface FeatureFlags {
   // Performance and monitoring
   PERFORMANCE_MONITORING: boolean;       // Telemetry collection
   ENHANCED_ERROR_TRACKING: boolean;     // Detailed error reporting
+
+  // Inventory features (new)
+  INVENTORY_CATEGORIES: boolean;         // Manage Categories feature (DEV only initially)
 }
 
 // Environment-based defaults (safety first)
@@ -36,6 +39,9 @@ const getDefaultFlags = (): FeatureFlags => {
     JOURNAL_PREMIUM_ANALYTICS: false,      // Future release
     JOURNAL_EXPORT_ACTIONS: false,         // Future release
     JOURNAL_AUTO_SYNC: false,              // Future release
+
+    // Inventory features
+    INVENTORY_CATEGORIES: isDev,           // Enabled only in development for safe rollout
   };
 };
 
@@ -138,7 +144,7 @@ if (process.env.NODE_ENV === 'development') {
   };
   
   // Expose database testing tools
-  import('../features/inventory/scripts/testDatabase').then(module => {
+  import('../features/inventory/scripts/testDatabase').then(() => {
     // This will set up window.__databaseTests automatically
   }).catch(error => {
     console.warn('Could not load database tests:', error);

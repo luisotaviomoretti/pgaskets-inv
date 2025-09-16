@@ -17,6 +17,7 @@ import * as FifoService from './supabase/fifo.service';
 import * as WorkOrderService from './supabase/workorder.service';
 import * as AuditService from './supabase/audit.service';
 import * as VendorService from './supabase/vendor.service';
+import * as CategoryService from './supabase/category.service';
 
 /**
  * SKU Operations
@@ -48,6 +49,10 @@ export const skuOperations = {
 
   async getInventorySummary() {
     return await SkuService.getInventorySummary();
+  },
+
+  async countSKUsByCategory(categoryName: string, options?: { activeOnly?: boolean }) {
+    return await SkuService.countSKUsByCategory(categoryName, options);
   }
 };
 
@@ -109,7 +114,36 @@ export const vendorOperations = {
     return await VendorService.deleteVendor(id);
   }
 };
+ 
+/**
+ * Category Operations
+ */
+export const categoryOperations = {
+  async getCategories(filters?: { active?: boolean; searchTerm?: string }) {
+    return await CategoryService.getCategories(filters);
+  },
 
+  async getCategoryById(id: string) {
+    return await CategoryService.getCategoryById(id);
+  },
+
+  async createCategory(input: { name: string; description?: string; sortOrder?: number }) {
+    return await CategoryService.createCategory(input);
+  },
+
+  async updateCategory(id: string, updates: Partial<CategoryService.UICategory>) {
+    return await CategoryService.updateCategory(id, updates);
+  },
+
+  async deleteCategory(id: string): Promise<void> {
+    return await CategoryService.deleteCategory(id);
+  },
+
+  async renameCategoryAndRetagSkus(oldName: string, newName: string, options?: { dryRun?: boolean }) {
+    return await CategoryService.renameCategoryAndRetagSkus(oldName, newName, options);
+  }
+};
+ 
 /**
  * FIFO Layer Operations
  */

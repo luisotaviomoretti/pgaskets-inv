@@ -20,6 +20,7 @@ import {
   deleteMovement as deleteBackendMovement,
   skuOperations,
   vendorOperations,
+  categoryOperations,
   movementOperations,
   getFIFOLayers
 } from '@/features/inventory/services/inventory.adapter';
@@ -30,6 +31,7 @@ import { getFeatureFlag } from '@/lib/featureFlags';
 
 // Types
 type Vendor = { id: string; name: string; address?: string; bank?: string; email?: string; phone?: string };
+type Category = { id: string; name: string; active: boolean; description?: string; sortOrder?: number | null };
 
 // Mock vendors data
 const MOCK_VENDORS: Vendor[] = [
@@ -66,6 +68,308 @@ function buildBins(start: number, end: number, n = 7): Array<[number, number]> {
     out.push([s, e]);
   }
   return out;
+}
+
+// --- Categories manager (master data) ---
+function CategoriesManager({ 
+  items,
+  onChange,
+  onRefresh
+}: {
+  items: Category[];
+  onChange: (items: Category[]) => void;
+  onRefresh?: () => Promise<void>;
+}) {
+  const emptyCategory: Category = { id: '', name: '', active: true, description: '', sortOrder: null };
+  const [openForm, setOpenForm] = useState(false);
+  const [editingIndex, setEditingIndex] = useState<number | null>(null);
+  const [form, setForm] = useState<Category>(emptyCategory);
+  const [confirmDelete, setConfirmDelete] = useState<number | null>(null);
+  const [errors, setErrors] = useState<Record<string, string>>({});
+
+  // Safe rename (F5): preview + confirm
+  const [renameOpen, setRenameOpen] = useState(false);
+  const [renameOldName, setRenameOldName] = useState<string>('');
+  const [renameNewName, setRenameNewName] = useState<string>('');
+  const [renamePreview, setRenamePreview] = useState<{ skusUpdated?: number } | null>(null);
+  const [renaming, setRenaming] = useState(false);
+  const [renameError, setRenameError] = useState<string | null>(null);
+
+  // Inline observability for actions (non-disruptive fallback to toasts)
+  const [actionNotice, setActionNotice] = useState<{ kind: 'info' | 'success' | 'error'; message: string } | null>(null);
+  const [deletingIndex, setDeletingIndex] = useState<number | null>(null);
+
+  const validateForm = (f: Category) => {
+    const e: Record<string, string> = {};
+    if (!(f.name || '').trim()) e.name = 'Name is required';
+    return e;
+  };
+
+  useEffect(() => {
+    setErrors(validateForm(form));
+  }, [form]);
+
+  function resetForm() { setForm(emptyCategory); setEditingIndex(null); setOpenForm(false); }
+
+  async function saveCategory() {
+    const name = (form.name || '').trim();
+    const e = validateForm({ ...form, name });
+    setErrors(e);
+    if (!name || Object.keys(e).length > 0) return;
+
+    try {
+      if (editingIndex === null) {
+        await categoryOperations.createCategory({ name, description: form.description || undefined, sortOrder: form.sortOrder ?? undefined });
+        toast.success(`Category "${name}" created successfully!`);
+      } else {
+        const original = items[editingIndex];
+        // Do not allow renaming via Edit; only update non-identity fields
+        await categoryOperations.updateCategory(original.id, { description: form.description, sortOrder: form.sortOrder });
+        toast.success(`Category details updated successfully!`);
+      }
+      // Invalidate cache so dropdown reflects immediately
+      if (typeof window !== 'undefined') {
+        try { localStorage.removeItem('inv_categories_cache_v1'); } catch {}
+      }
+      if (onRefresh) await onRefresh();
+      resetForm();
+    } catch (error: any) {
+      console.error('Error saving category:', error);
+      let msg = 'Failed to save category';
+      if (error?.message?.includes('duplicate') || error?.message?.includes('unique')) msg = `Category "${name}" already exists`;
+      else if (error?.message) msg = error.message;
+      toast.error(msg);
+    }
+  }
+
+  function startRename(i: number) {
+    const target = items[i]; if (!target) return;
+    setRenameOpen(true);
+    setRenameOldName(target.name);
+    setRenameNewName(target.name);
+    setRenamePreview(null);
+    setRenameError(null);
+  }
+
+  async function previewRename() {
+    const oldName = (renameOldName || '').trim();
+    const newName = (renameNewName || '').trim();
+    setRenameError(null);
+    setRenamePreview(null);
+    if (!oldName || !newName || oldName === newName) return;
+    try {
+      const res: any = await categoryOperations.renameCategoryAndRetagSkus(oldName, newName, { dryRun: true });
+      if (!res?.success) {
+        setRenameError(res?.error || 'Preview failed');
+        return;
+      }
+      setRenamePreview({ skusUpdated: res.skusUpdated });
+    } catch (err: any) {
+      setRenameError(err?.message || 'Preview failed');
+    }
+  }
+
+  async function confirmRename() {
+    const oldName = (renameOldName || '').trim();
+    const newName = (renameNewName || '').trim();
+    if (!oldName || !newName || oldName === newName) return;
+    setRenaming(true);
+    setRenameError(null);
+    try {
+      const res: any = await categoryOperations.renameCategoryAndRetagSkus(oldName, newName, { dryRun: false });
+      if (!res?.success) {
+        setRenameError(res?.error || 'Rename failed');
+        setRenaming(false);
+        return;
+      }
+      // Invalidate categories cache so dropdown reflects immediately
+      if (typeof window !== 'undefined') {
+        try { localStorage.removeItem('inv_categories_cache_v1'); } catch {}
+      }
+      if (onRefresh) await onRefresh();
+      toast.success(`Category renamed to "${newName}" and ${res.skusUpdated ?? 0} SKU(s) retagged`);
+      setRenameOpen(false);
+    } catch (err: any) {
+      setRenameError(err?.message || 'Rename failed');
+    } finally {
+      setRenaming(false);
+    }
+  }
+
+  function startEdit(i: number) {
+    setForm({ ...items[i] });
+    setEditingIndex(i);
+    setOpenForm(true);
+    setErrors(validateForm(items[i]));
+  }
+
+  function askDelete(i: number) { setConfirmDelete(i); }
+  function cancelDelete() { setConfirmDelete(null); }
+  async function removeCategoryConfirmed(i: number) {
+    const target = items[i]; if (!target) return;
+    try {
+      setDeletingIndex(i);
+      // Guard-rail: block delete/deactivate if category has active SKUs
+      const activeSkuCount = await skuOperations.countSKUsByCategory(target.name, { activeOnly: true });
+      console.info('[Categories] Deactivate guard — active SKUs in "%s": %d', target.name, activeSkuCount);
+      if ((activeSkuCount || 0) > 0) {
+        const msg = `Cannot deactivate "${target.name}": category has ${activeSkuCount} active SKU(s).`;
+        toast.error(msg);
+        setActionNotice({ kind: 'error', message: msg });
+        setConfirmDelete(null);
+        setDeletingIndex(null);
+        return;
+      }
+
+      await categoryOperations.deleteCategory(target.id);
+      // Invalidate cache so dropdown reflects immediately
+      if (typeof window !== 'undefined') {
+        try { localStorage.removeItem('inv_categories_cache_v1'); } catch {}
+      }
+      if (onRefresh) await onRefresh();
+      if (editingIndex === i) resetForm();
+      setConfirmDelete(null);
+      console.info('[Categories] Category deactivated: %s', target.name);
+      toast.success(`Category "${target.name}" deactivated`);
+      setActionNotice({ kind: 'success', message: `Category "${target.name}" deactivated.` });
+      setDeletingIndex(null);
+    } catch (error: any) {
+      console.error('[Categories] Error deleting category:', error);
+      const msg = error?.message || 'Failed to delete category';
+      toast.error(msg);
+      setActionNotice({ kind: 'error', message: msg });
+      setConfirmDelete(null);
+      setDeletingIndex(null);
+    }
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <div className="text-sm text-slate-600">Centralized category master data</div>
+        <Button size="sm" className="rounded-xl" onClick={() => {
+          setOpenForm(v => {
+            const next = !v;
+            if (next) {
+              setForm(emptyCategory);
+              setErrors(validateForm(emptyCategory));
+            }
+            return next;
+          });
+        }}>{openForm ? 'Close' : 'Add Category'}</Button>
+      </div>
+      {/* Inline notice area for actions (aria-live for SR) - visible regardless of form state */}
+      {actionNotice && (
+        <div className={`text-sm mt-1 ${actionNotice.kind === 'error' ? 'text-red-600' : actionNotice.kind === 'success' ? 'text-green-700' : 'text-slate-600'}`} aria-live="polite">
+          {actionNotice.message}
+        </div>
+      )}
+      {openForm && (
+        <div className="rounded-2xl border border-dashed p-4 grid grid-cols-1 md:grid-cols-3 gap-3">
+          {editingIndex !== null && (
+            <div className="md:col-span-3 text-xs text-slate-500">Editing category: <b>{items[editingIndex]?.name}</b></div>
+          )}
+          <div>
+            <Label htmlFor="cat-name" className="mb-1.5 block">Name *</Label>
+            <Input id="cat-name" className={`w-full h-10 ${errors.name ? 'border-red-500 focus:ring-red-500' : ''}`}
+              value={form.name}
+              onChange={e => setForm({ ...form, name: e.target.value })}
+              placeholder="e.g., Adhesives"
+              aria-invalid={!!errors.name}
+              aria-describedby={(errors.name ? 'cat-name-error ' : '') + (editingIndex !== null ? 'cat-name-help' : '') || undefined}
+              disabled={editingIndex !== null}
+              readOnly={editingIndex !== null}
+            />
+            {editingIndex !== null && (
+              <div id="cat-name-help" className="text-xs text-slate-500 mt-1">To rename a category, use the <b>Rename</b> action in the table below.</div>
+            )}
+            {errors.name && (<div id="cat-name-error" className="text-sm text-red-600 mt-1">{errors.name}</div>)}
+          </div>
+          <div>
+            <Label htmlFor="cat-sort" className="mb-1.5 block">Sort order</Label>
+            <Input id="cat-sort" className="w-full h-10" type="number" value={form.sortOrder ?? ''}
+              onChange={e => setForm({ ...form, sortOrder: e.target.value === '' ? null : Number(e.target.value) })}
+              placeholder="e.g., 10" />
+          </div>
+          
+          <div className="md:col-span-3">
+            <Label htmlFor="cat-desc" className="mb-1.5 block">Description</Label>
+            <Input id="cat-desc" className="w-full h-10" value={form.description ?? ''} onChange={e => setForm({ ...form, description: e.target.value })} placeholder="Optional" />
+          </div>
+          <div className="md:col-span-3 flex gap-2 justify-end">
+            <Button className="rounded-xl" onClick={saveCategory}>{editingIndex === null ? 'Save' : 'Update'}</Button>
+            <Button variant="outline" className="rounded-xl" onClick={resetForm}>Cancel</Button>
+          </div>
+        </div>
+      )}
+
+      {renameOpen && (
+        <div className="rounded-2xl border border-amber-300 bg-amber-50 p-4 space-y-3">
+          <div className="flex items-center justify-between">
+            <div className="text-sm text-slate-700 font-medium">Rename category and retag SKUs (safe, transactional)</div>
+            <Button size="sm" variant="ghost" onClick={() => setRenameOpen(false)}>Close</Button>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            <div>
+              <Label className="mb-1.5 block">Current name</Label>
+              <Input value={renameOldName} readOnly className="bg-slate-100" />
+            </div>
+            <div className="md:col-span-2">
+              <Label className="mb-1.5 block">New name *</Label>
+              <Input value={renameNewName} onChange={e => setRenameNewName(e.target.value)} placeholder="e.g., Adhesives" />
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <Button size="sm" variant="outline" onClick={previewRename} disabled={!renameOldName || !renameNewName || renameOldName.trim() === renameNewName.trim()}>Preview impact</Button>
+            <Button size="sm" onClick={confirmRename} disabled={renaming || !renameOldName || !renameNewName || renameOldName.trim() === renameNewName.trim()}>Confirm rename</Button>
+          </div>
+          {renamePreview && (
+            <div className="text-sm text-slate-600">This operation will retag approximately <b>{renamePreview.skusUpdated ?? 0}</b> SKU(s).</div>
+          )}
+          {renameError && (
+            <div className="text-sm text-red-600">{renameError}</div>
+          )}
+        </div>
+      )}
+      <Table>
+        <TableHeader>
+          <TableRow>
+            <TableHead>Name</TableHead>
+            <TableHead>Active</TableHead>
+            <TableHead>Sort</TableHead>
+            <TableHead>Description</TableHead>
+            <TableHead className="text-right">Actions</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {items.map((c, i) => (
+            <TableRow key={c.id || String(i)}>
+              <TableCell className="font-medium">{c.name}</TableCell>
+              <TableCell>{c.active ? 'Yes' : 'No'}</TableCell>
+              <TableCell>{c.sortOrder ?? '-'}</TableCell>
+              <TableCell>{c.description ?? '-'}</TableCell>
+              <TableCell className="text-right">
+                {confirmDelete === i ? (
+                  <div className="flex justify-end gap-2">
+                    <Button size="sm" variant="destructive" onClick={() => removeCategoryConfirmed(i)} disabled={deletingIndex === i}>
+                      {deletingIndex === i ? 'Processing...' : 'Confirm'}
+                    </Button>
+                    <Button size="sm" variant="outline" onClick={cancelDelete}>Cancel</Button>
+                  </div>
+                ) : (
+                  <div className="flex justify-end gap-2">
+                    <Button size="sm" variant="outline" onClick={() => startRename(i)}>Rename</Button>
+                    <Button size="sm" variant="outline" onClick={() => startEdit(i)}>Edit</Button>
+                    <Button size="sm" variant="outline" className="text-red-600" onClick={() => askDelete(i)}>{items[i]?.active ? 'Deactivate' : 'Delete'}</Button>
+                  </div>
+                )}
+              </TableCell>
+            </TableRow>
+          ))}
+        </TableBody>
+      </Table>
+    </div>
+  );
 }
 
 // Tipos para granularidade adaptativa
@@ -192,7 +496,7 @@ function buildAdaptiveBins(period: PeriodOption, start: number, end: number): Ar
 }
 
 // Dedicated SKUs Modal shell component to enforce consistent layout and a11y
-function SKUsModal({ children, onClose, onToggleAdd, addOpen }: { children: React.ReactNode; onClose: () => void; onToggleAdd: () => void; addOpen: boolean }) {
+function SKUsModal({ children, onClose, onToggleAdd, addOpen, onOpenCategories, manageCategoriesEnabled }: { children: React.ReactNode; onClose: () => void; onToggleAdd: () => void; addOpen: boolean; onOpenCategories?: () => void; manageCategoriesEnabled?: boolean }) {
   const modalRef = React.useRef<HTMLDivElement>(null);
   useEffect(() => {
     modalRef.current?.focus();
@@ -214,6 +518,9 @@ function SKUsModal({ children, onClose, onToggleAdd, addOpen }: { children: Reac
             </div>
             <div className="flex items-center gap-2">
               <Button size="sm" variant="outline" onClick={onToggleAdd}>{addOpen ? 'Close form' : 'Add SKU'}</Button>
+              {manageCategoriesEnabled && onOpenCategories && (
+                <Button size="sm" variant="outline" onClick={onOpenCategories}>Manage Categories</Button>
+              )}
               <Button size="sm" onClick={onClose} aria-label="Close">✕</Button>
             </div>
           </div>
@@ -425,7 +732,9 @@ function SKUsManager({
   openForm: openFormProp,
   onToggleForm,
   hideLocalHeader,
-  onRefresh
+  onRefresh,
+  categoryOptions,
+  useDynamicCategories
 }: { 
   items: SKU[]; 
   onChange: (items: SKU[]) => void;
@@ -433,6 +742,8 @@ function SKUsManager({
   onToggleForm?: () => void;
   hideLocalHeader?: boolean;
   onRefresh?: () => Promise<void>;
+  categoryOptions?: string[];
+  useDynamicCategories?: boolean;
 }) {
   const emptySku: SKU = { id: '', description: '', type: 'RAW', productCategory: 'Cork/Rubber', unit: 'unit', min: 0, onHand: 0 };
   const [openFormUncontrolled, setOpenFormUncontrolled] = useState(false);
@@ -442,6 +753,14 @@ function SKUsManager({
   const [form, setForm] = useState<SKU>(emptySku);
   const [confirmDelete, setConfirmDelete] = useState<number | null>(null);
   const [errors, setErrors] = useState<Record<string, string>>({});
+
+  // Merge dynamic categories with static fallback
+  const mergedCategoryOptions = useMemo<string[]>(() => {
+    if (useDynamicCategories && Array.isArray(categoryOptions) && categoryOptions.length > 0) {
+      return categoryOptions;
+    }
+    return CATEGORY_OPTIONS;
+  }, [useDynamicCategories, categoryOptions]);
 
   // Simple validation mirroring Receiving's Quantity rules for Minimum (> 0)
   const validateForm = (f: SKU) => {
@@ -619,7 +938,7 @@ function SKUsManager({
             <Select value={form.productCategory} onValueChange={(v) => setForm({ ...form, productCategory: v as ProductCategory })}>
               <SelectTrigger className="h-10 w-full rounded-xl"><SelectValue /></SelectTrigger>
               <SelectContent>
-                {CATEGORY_OPTIONS.map(c => (<SelectItem key={c} value={c}>{c}</SelectItem>))}
+                {mergedCategoryOptions.map((c: string) => (<SelectItem key={c} value={c}>{c}</SelectItem>))}
               </SelectContent>
             </Select>
           </div>
@@ -936,6 +1255,8 @@ export default function InventoryWireframe() {
   const [customStart, setCustomStart] = useState<string>('');
   const [customEnd, setCustomEnd] = useState<string>('');
   const [vendors, setVendors] = useState<Vendor[]>([]);
+  const [categories, setCategories] = useState<Category[]>([]);
+  const categoryOptionNames = useMemo<string[]>(() => (categories || []).map(c => c.name), [categories]);
   const [skuMaster, setSkuMaster] = useState<SKU[]>([]);
   const [skus, setSkus] = useState<SKU[]>([]);
   // Initialize without mock data; layers are fetched from backend on demand (e.g., when opening the modal)
@@ -1088,11 +1409,64 @@ export default function InventoryWireframe() {
     }
   }, []);
   
+  // Feature flag for categories (defined before loader)
+  const categoryFeatureEnabled = getFeatureFlag('INVENTORY_CATEGORIES');
+
+  // Load Categories from backend (on demand)
+  const loadCategories = useCallback(async () => {
+    if (!categoryFeatureEnabled) return;
+    try {
+      // Try cache first (TTL 5 minutes)
+      if (typeof window !== 'undefined') {
+        const raw = localStorage.getItem('inv_categories_cache_v1');
+        if (raw) {
+          try {
+            const cached = JSON.parse(raw) as { ts: number; items: any[] };
+            if (cached && typeof cached.ts === 'number' && Array.isArray(cached.items)) {
+              const fresh = Date.now() - cached.ts < 5 * 60 * 1000;
+              if (fresh) {
+                const mappedCached: Category[] = (cached.items || []).map((c: any) => ({
+                  id: String(c.id),
+                  name: String(c.name),
+                  active: !!c.active,
+                  description: c.description ?? undefined,
+                  sortOrder: typeof c.sortOrder === 'number' ? c.sortOrder : (c.sortOrder ?? null),
+                }));
+                setCategories(mappedCached);
+                return;
+              }
+            }
+          } catch {}
+        }
+      }
+
+      const backendCategories = await categoryOperations.getCategories({ active: true });
+      const mapped: Category[] = (backendCategories || []).map((c: any) => ({
+        id: c.id,
+        name: c.name,
+        active: !!c.active,
+        description: c.description ?? undefined,
+        sortOrder: typeof c.sortOrder === 'number' ? c.sortOrder : (c.sortOrder ?? null),
+      }));
+      setCategories(mapped);
+      if (typeof window !== 'undefined') {
+        try {
+          localStorage.setItem('inv_categories_cache_v1', JSON.stringify({ ts: Date.now(), items: mapped }));
+        } catch {}
+      }
+    } catch (err) {
+      console.error('loadCategories error', err);
+      // keep UI usable even if categories fail to load
+    }
+  }, [categoryFeatureEnabled]);
+  
   // Quick menu state
   const [vendorsOpen, setVendorsOpen] = useState(false);
   const [skusOpen, setSkusOpen] = useState(false);
   const [skuFormOpen, setSkuFormOpen] = useState(false);
-  
+  const [categoriesOpen, setCategoriesOpen] = useState(false);
+  // removed stray state (was unused)
+
   // Movements export state
   const [movementsExportOpen, setMovementsExportOpen] = useState(false);
   
@@ -1102,6 +1476,13 @@ export default function InventoryWireframe() {
   // Performance optimization refs
   const refreshTimeout = useRef<NodeJS.Timeout | null>(null);
   const consolidationTimeout = useRef<NodeJS.Timeout | null>(null);
+
+  // Prefetch categories when SKUs modal opens (feature-flagged)
+  useEffect(() => {
+    if (skusOpen && categoryFeatureEnabled) {
+      loadCategories();
+    }
+  }, [skusOpen, categoryFeatureEnabled, loadCategories]);
 
   // Performance: Cleanup timeouts on unmount
   useEffect(() => {
@@ -2407,6 +2788,8 @@ export default function InventoryWireframe() {
           onClose={() => { setSkusOpen(false); setSkuFormOpen(false); }}
           onToggleAdd={() => setSkuFormOpen(v => !v)}
           addOpen={skuFormOpen}
+          manageCategoriesEnabled={categoryFeatureEnabled}
+          onOpenCategories={categoryFeatureEnabled ? () => { setCategoriesOpen(true); loadCategories(); } : undefined}
         >
           <SKUsManager 
             items={skus} 
@@ -2415,8 +2798,31 @@ export default function InventoryWireframe() {
             onToggleForm={() => setSkuFormOpen(v => !v)}
             hideLocalHeader
             onRefresh={loadInventorySummary}
+            categoryOptions={categoryFeatureEnabled ? categoryOptionNames : undefined}
+            useDynamicCategories={categoryFeatureEnabled}
           />
         </SKUsModal>
+      )}
+
+      {/* Categories Modal (feature-flagged) */}
+      {categoryFeatureEnabled && categoriesOpen && (
+        <div className="fixed inset-0 z-50" role="dialog" aria-modal="true" aria-labelledby="categories-title">
+          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setCategoriesOpen(false)}></div>
+          <div className="absolute left-1/2 top-12 -translate-x-1/2 w-[min(100%,900px)]">
+            <Card className="rounded-2xl shadow-2xl bg-white">
+              <CardHeader className="py-4 flex flex-row items-center justify-between">
+                <CardTitle id="categories-title">Categories</CardTitle>
+                <div className="flex items-center gap-2">
+                  <Button size="sm" variant="outline" onClick={() => loadCategories()}>Refresh</Button>
+                  <Button size="sm" onClick={() => setCategoriesOpen(false)}>Close</Button>
+                </div>
+              </CardHeader>
+              <CardContent className="max-h-[70vh] overflow-auto">
+                <CategoriesManager items={categories} onChange={setCategories} onRefresh={loadCategories} />
+              </CardContent>
+            </Card>
+          </div>
+        </div>
       )}
     </div>
   );

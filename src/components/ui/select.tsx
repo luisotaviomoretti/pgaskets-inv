@@ -16,8 +16,17 @@ type SelectCtx = {
 const Ctx = createContext<SelectCtx>({});
 
 export function Select({ value, onValueChange, children }: { value?: string; onValueChange?: (v: string) => void; children: React.ReactNode }) {
+  // Helper to extract plain text from arbitrary ReactNode
+  const toText = (node: React.ReactNode): string => {
+    if (node === null || node === undefined || node === false) return '';
+    if (typeof node === 'string' || typeof node === 'number') return String(node);
+    if (Array.isArray(node)) return node.map(toText).join('');
+    if (React.isValidElement(node)) return toText((node.props ?? {}).children);
+    return '';
+  };
+
   // Flatten SelectItem children for a basic <select>
-  const items: Array<{ value: string; label: React.ReactNode }> = [];
+  const items: Array<{ value: string; label: string; disabled?: boolean }> = [];
   const walk = (nodes: React.ReactNode) => {
     React.Children.forEach(nodes, (child) => {
       if (!React.isValidElement(child)) return;
@@ -25,7 +34,7 @@ export function Select({ value, onValueChange, children }: { value?: string; onV
       const props = (el.props ?? {}) as any;
       const typeAny = el.type as any;
       if (typeAny?.__isSelectItem) {
-        items.push({ value: String(props.value), label: props.children as React.ReactNode });
+        items.push({ value: String(props.value), label: toText(props.children), disabled: !!props.disabled });
       } else if (props?.children) {
         walk(props.children as React.ReactNode);
       }
@@ -43,7 +52,7 @@ export function Select({ value, onValueChange, children }: { value?: string; onV
         >
           {!value && <option value="" hidden></option>}
           {items.map((it, i) => (
-            <option key={i} value={it.value}>{it.label as any}</option>
+            <option key={i} value={it.value} disabled={!!it.disabled}>{it.label}</option>
           ))}
         </select>
       </div>
@@ -64,8 +73,8 @@ export const SelectContent: React.FC<React.HTMLAttributes<HTMLDivElement>> = ({ 
   <div className={className} {...props} />
 );
 
-export const SelectItem: React.FC<{ value: string } & React.HTMLAttributes<HTMLDivElement>> = ({ value, className = '', ...props }) => {
-  return <div data-value={value} className={className} {...props} />;
+export const SelectItem: React.FC<{ value: string; disabled?: boolean } & React.HTMLAttributes<HTMLDivElement>> = ({ value, disabled, className = '', ...props }) => {
+  return <div data-value={value} data-disabled={disabled ? 'true' : undefined} className={className} {...props} />;
 };
 (SelectItem as any).__isSelectItem = true;
 
