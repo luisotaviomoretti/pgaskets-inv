@@ -1033,7 +1033,7 @@ function VendorsManager({
   onChange: (items: Vendor[]) => void;
   onRefresh?: () => Promise<void>;
 }) {
-  const emptyVendor: Vendor = { id: '', name: '', email: '', phone: '', address: '', bank: '' };
+  const emptyVendor: Vendor = { id: '', name: '', email: '', phone: '', address: '' };
   const [openForm, setOpenForm] = useState(false);
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
   const [form, setForm] = useState<Vendor>(emptyVendor);
@@ -1065,7 +1065,6 @@ function VendorsManager({
           address: form.address?.trim() || undefined,
           email: form.email?.trim() || undefined,
           phone: form.phone?.trim() || undefined,
-          bank: form.bank?.trim() || undefined,
         };
         
         await vendorOperations.createVendor(newVendorData);
@@ -1197,10 +1196,12 @@ function VendorsManager({
             <Label htmlFor="vendor-address" className="mb-1.5 block">Address</Label>
             <Input id="vendor-address" className="w-full h-10" value={form.address ?? ''} onChange={e => setForm({ ...form, address: e.target.value })} placeholder="Street, City, State" />
           </div>
-          <div className="md:col-span-2">
-            <Label htmlFor="vendor-bank" className="mb-1.5 block">Bank account</Label>
-            <Input id="vendor-bank" className="w-full h-10" value={form.bank ?? ''} onChange={e => setForm({ ...form, bank: e.target.value })} placeholder="Bank • ****-1234" />
-          </div>
+          {editingIndex !== null && (
+            <div className="md:col-span-2">
+              <Label htmlFor="vendor-bank" className="mb-1.5 block">Bank account</Label>
+              <Input id="vendor-bank" className="w-full h-10" value={form.bank ?? ''} onChange={e => setForm({ ...form, bank: e.target.value })} placeholder="Bank • ****-1234" />
+            </div>
+          )}
           <div className="md:col-span-2 flex gap-2 justify-end">
             <Button className="rounded-xl" onClick={saveVendor}>{editingIndex === null ? 'Save' : 'Update'}</Button>
             <Button variant="outline" className="rounded-xl" onClick={resetForm}>Cancel</Button>
@@ -1212,7 +1213,7 @@ function VendorsManager({
           <TableRow>
             <TableHead>Name</TableHead>
             <TableHead>Address</TableHead>
-            <TableHead>Bank</TableHead>
+
             <TableHead>Email</TableHead>
             <TableHead>Phone</TableHead>
             <TableHead className="text-right">Actions</TableHead>
@@ -1223,7 +1224,7 @@ function VendorsManager({
             <TableRow key={v.id || String(i)}>
               <TableCell className="font-medium">{v.name}</TableCell>
               <TableCell>{v.address ?? '-'}</TableCell>
-              <TableCell>{v.bank ?? '-'}</TableCell>
+
               <TableCell>{v.email ?? '-'}</TableCell>
               <TableCell>{v.phone ?? '-'}</TableCell>
               <TableCell className="text-right">
