@@ -1078,7 +1078,6 @@ function VendorsManager({
           address: form.address?.trim() || undefined,
           email: form.email?.trim() || undefined,
           phone: form.phone?.trim() || undefined,
-          bank: form.bank?.trim() || undefined,
         };
         
         await vendorOperations.updateVendor(originalVendor.id, updateData);
@@ -1196,12 +1195,7 @@ function VendorsManager({
             <Label htmlFor="vendor-address" className="mb-1.5 block">Address</Label>
             <Input id="vendor-address" className="w-full h-10" value={form.address ?? ''} onChange={e => setForm({ ...form, address: e.target.value })} placeholder="Street, City, State" />
           </div>
-          {editingIndex !== null && (
-            <div className="md:col-span-2">
-              <Label htmlFor="vendor-bank" className="mb-1.5 block">Bank account</Label>
-              <Input id="vendor-bank" className="w-full h-10" value={form.bank ?? ''} onChange={e => setForm({ ...form, bank: e.target.value })} placeholder="Bank • ****-1234" />
-            </div>
-          )}
+
           <div className="md:col-span-2 flex gap-2 justify-end">
             <Button className="rounded-xl" onClick={saveVendor}>{editingIndex === null ? 'Save' : 'Update'}</Button>
             <Button variant="outline" className="rounded-xl" onClick={resetForm}>Cancel</Button>
