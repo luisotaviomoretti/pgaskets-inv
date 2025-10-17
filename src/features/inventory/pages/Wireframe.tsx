@@ -2218,6 +2218,53 @@ export default function InventoryWireframe() {
     </div>
   );
 
+  // Phase 1: Top synced scrollbar + sticky header (feature-flagged)
+  const dashboardTopScrollEnabled = getFeatureFlag('DASHBOARD_TOP_SCROLL');
+  const topScrollRef = useRef<HTMLDivElement | null>(null);
+  const bottomScrollRef = useRef<HTMLDivElement | null>(null);
+  const isSyncingRef = useRef(false);
+  const tableWidth = useMemo(() => Object.values(columnWidths).reduce((sum, width) => sum + width, 0), [columnWidths]);
+  const headerStickyCls = dashboardTopScrollEnabled ? ' sticky top-0 z-10 bg-white' : '';
+  const stickyColsEnabled = getFeatureFlag('DASHBOARD_STICKY_COLUMNS');
+  const stickyFiltersEnabled = getFeatureFlag('DASHBOARD_STICKY_FILTERS');
+  const left0 = stickyColsEnabled ? ' sticky left-0 z-10 bg-white' : '';
+  const left1 = stickyColsEnabled ? ` sticky z-10 bg-white` : '';
+  const [showEdgeShadow, setShowEdgeShadow] = useState(false);
+  // Track horizontal scroll to show subtle shadow
+  useEffect(() => {
+    if (!stickyColsEnabled) return;
+    const el = bottomScrollRef.current;
+    if (!el) return;
+    const onScroll = () => setShowEdgeShadow(el.scrollLeft > 0);
+    onScroll();
+    el.addEventListener('scroll', onScroll, { passive: true });
+    return () => el.removeEventListener('scroll', onScroll);
+  }, [stickyColsEnabled, bottomScrollRef.current]);
+
+  useEffect(() => {
+    if (!dashboardTopScrollEnabled) return;
+    const top = topScrollRef.current;
+    const bottom = bottomScrollRef.current;
+    if (!top || !bottom) return;
+    const sync = (source: HTMLElement, target: HTMLElement) => {
+      if (isSyncingRef.current) return;
+      isSyncingRef.current = true;
+      target.scrollLeft = source.scrollLeft;
+      // release on next frame to avoid feedback loop
+      requestAnimationFrame(() => { isSyncingRef.current = false; });
+    };
+    const onTop = () => sync(top, bottom);
+    const onBottom = () => sync(bottom, top);
+    top.addEventListener('scroll', onTop, { passive: true });
+    bottom.addEventListener('scroll', onBottom, { passive: true });
+    // Align initial
+    bottom.scrollLeft = top.scrollLeft;
+    return () => {
+      top.removeEventListener('scroll', onTop as any);
+      bottom.removeEventListener('scroll', onBottom as any);
+    };
+  }, [dashboardTopScrollEnabled, tableWidth]);
+
 
   return (
     <div className="min-h-screen w-full bg-white text-slate-900">
@@ -2381,40 +2428,84 @@ export default function InventoryWireframe() {
                 </div>
               </CardHeader>
               <CardContent>
-                <div className="flex items-center justify-between gap-2 mb-3">
-                  <div className="text-xs text-slate-500">Traffic light: green = above minimum • red = below minimum</div>
-                  <div className="flex items-center gap-2">
-                    <Select value={sortMode} onValueChange={(value) => setSortMode(value as typeof sortMode)}>
-                      <SelectTrigger className="h-8 w-[200px] rounded-xl">
-                        <SelectValue placeholder="Sort by..." />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="default">Default</SelectItem>
-                        <SelectItem value="redFlags">🚩 Red Flags First</SelectItem>
-                        <SelectItem value="quantity">📊 By Quantity</SelectItem>
-                        <SelectItem value="category">📂 By Category</SelectItem>
-                      </SelectContent>
-                    </Select>
-                    <Button variant="outline" size="sm" onClick={resetWidths} title="Reset column widths to default">
-                      Reset columns
-                    </Button>
-                    <Button variant="outline" size="sm" onClick={() => exportToExcel(false)}>Export all (Excel)</Button>
-                    <Button size="sm" onClick={() => exportToExcel(true)}>Export red flags (Excel)</Button>
-                    <Select onValueChange={(v) => {
-                      if (v === 'ALL') return setSkus(skuMaster);
-                      setSkus(skuMaster.filter(s => s.type === (v as MaterialType)));
-                    }}>
-                      <SelectTrigger className="h-8 w-[200px] rounded-xl"><SelectValue placeholder="Filter by type" /></SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="ALL">All</SelectItem>
-                        <SelectItem value="RAW">Raw</SelectItem>
-                        <SelectItem value="SELLABLE">Sellable</SelectItem>
-                      </SelectContent>
-                    </Select>
+                {stickyFiltersEnabled ? (
+                  <div className="sticky top-[120px] z-20 bg-white/95 backdrop-blur border-b">
+                    <div className="flex items-center justify-between gap-2 px-0 py-2">
+                      <div className="text-xs text-slate-500">Traffic light: green = above minimum • red = below minimum</div>
+                      <div className="flex items-center gap-2">
+                        <Select value={sortMode} onValueChange={(value) => setSortMode(value as typeof sortMode)}>
+                          <SelectTrigger className="h-8 w-[200px] rounded-xl">
+                            <SelectValue placeholder="Sort by..." />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="default">Default</SelectItem>
+                            <SelectItem value="redFlags">🚩 Red Flags First</SelectItem>
+                            <SelectItem value="quantity">📊 By Quantity</SelectItem>
+                            <SelectItem value="category">📂 By Category</SelectItem>
+                          </SelectContent>
+                        </Select>
+                        <Button variant="outline" size="sm" onClick={resetWidths} title="Reset column widths to default">Reset columns</Button>
+                        <Button variant="outline" size="sm" onClick={() => exportToExcel(false)}>Export all (Excel)</Button>
+                        <Button size="sm" onClick={() => exportToExcel(true)}>Export red flags (Excel)</Button>
+                        <Select onValueChange={(v) => {
+                          if (v === 'ALL') return setSkus(skuMaster);
+                          setSkus(skuMaster.filter(s => s.type === (v as MaterialType)));
+                        }}>
+                          <SelectTrigger className="h-8 w-[200px] rounded-xl"><SelectValue placeholder="Filter by type" /></SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="ALL">All</SelectItem>
+                            <SelectItem value="RAW">Raw</SelectItem>
+                            <SelectItem value="SELLABLE">Sellable</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    </div>
+                    {dashboardTopScrollEnabled && (
+                      <div className="overflow-x-auto h-4" ref={topScrollRef} aria-hidden="true">
+                        <div style={{ width: tableWidth }} className="h-1" />
+                      </div>
+                    )}
                   </div>
-                </div>
-
-                <div className="overflow-x-auto">
+                ) : (
+                  <>
+                    <div className="flex items-center justify-between gap-2 mb-3">
+                      <div className="text-xs text-slate-500">Traffic light: green = above minimum • red = below minimum</div>
+                      <div className="flex items-center gap-2">
+                        <Select value={sortMode} onValueChange={(value) => setSortMode(value as typeof sortMode)}>
+                          <SelectTrigger className="h-8 w-[200px] rounded-xl">
+                            <SelectValue placeholder="Sort by..." />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="default">Default</SelectItem>
+                            <SelectItem value="redFlags">🚩 Red Flags First</SelectItem>
+                            <SelectItem value="quantity">📊 By Quantity</SelectItem>
+                            <SelectItem value="category">📂 By Category</SelectItem>
+                          </SelectContent>
+                        </Select>
+                        <Button variant="outline" size="sm" onClick={resetWidths} title="Reset column widths to default">Reset columns</Button>
+                        <Button variant="outline" size="sm" onClick={() => exportToExcel(false)}>Export all (Excel)</Button>
+                        <Button size="sm" onClick={() => exportToExcel(true)}>Export red flags (Excel)</Button>
+                        <Select onValueChange={(v) => {
+                          if (v === 'ALL') return setSkus(skuMaster);
+                          setSkus(skuMaster.filter(s => s.type === (v as MaterialType)));
+                        }}>
+                          <SelectTrigger className="h-8 w-[200px] rounded-xl"><SelectValue placeholder="Filter by type" /></SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="ALL">All</SelectItem>
+                            <SelectItem value="RAW">Raw</SelectItem>
+                            <SelectItem value="SELLABLE">Sellable</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    </div>
+                    {dashboardTopScrollEnabled && (
+                      <div className="overflow-x-auto h-4 mb-1" ref={topScrollRef} aria-hidden="true">
+                        <div style={{ width: tableWidth }} className="h-1" />
+                      </div>
+                    )}
+                  </>
+                )}
+                <div className="overflow-x-auto" ref={bottomScrollRef}>
                   <Table className="min-w-[1100px] table-fixed resizable-table"
                     style={{ 
                       width: Object.values(columnWidths).reduce((sum, width) => sum + width, 0) 
@@ -2423,7 +2514,7 @@ export default function InventoryWireframe() {
                     <TableHeader>
                       <TableRow>
                         <TableHead 
-                          className="whitespace-nowrap relative"
+                          className={`whitespace-nowrap relative${headerStickyCls}${left0}`}
                           style={{ width: columnWidths.category, minWidth: 60 }}
                         >
                           Category
@@ -2431,10 +2522,13 @@ export default function InventoryWireframe() {
                             className="absolute top-0 right-0 w-1 h-full cursor-col-resize bg-transparent hover:bg-blue-300 opacity-0 hover:opacity-50"
                             onMouseDown={(e) => handleMouseDown('category', e)}
                           />
+                          {stickyColsEnabled && showEdgeShadow && (
+                            <div className="absolute inset-y-0 -right-0.5 w-2 pointer-events-none" style={{ background: 'linear-gradient(to right, rgba(0,0,0,0.08), rgba(0,0,0,0))' }} />
+                          )}
                         </TableHead>
                         <TableHead 
-                          className="whitespace-nowrap relative"
-                          style={{ width: columnWidths.sku, minWidth: 60 }}
+                          className={`whitespace-nowrap relative${headerStickyCls}${left1}`}
+                          style={{ width: columnWidths.sku, minWidth: 60, left: stickyColsEnabled ? columnWidths.category : undefined }}
                         >
                           SKU
                           <div 
@@ -2443,7 +2537,7 @@ export default function InventoryWireframe() {
                           />
                         </TableHead>
                         <TableHead 
-                          className="whitespace-nowrap relative"
+                          className={`whitespace-nowrap relative${headerStickyCls}`}
                           style={{ width: columnWidths.description, minWidth: 60 }}
                         >
                           Description
@@ -2453,7 +2547,7 @@ export default function InventoryWireframe() {
                           />
                         </TableHead>
                         <TableHead 
-                          className="whitespace-nowrap relative"
+                          className={`whitespace-nowrap relative${headerStickyCls}`}
                           style={{ width: columnWidths.status, minWidth: 60 }}
                         >
                           Status
@@ -2463,7 +2557,7 @@ export default function InventoryWireframe() {
                           />
                         </TableHead>
                         <TableHead 
-                          className="whitespace-nowrap relative"
+                          className={`whitespace-nowrap relative${headerStickyCls}`}
                           style={{ width: columnWidths.unit, minWidth: 60 }}
                         >
                           U/M
@@ -2473,7 +2567,7 @@ export default function InventoryWireframe() {
                           />
                         </TableHead>
                         <TableHead 
-                          className="whitespace-nowrap relative"
+                          className={`whitespace-nowrap relative${headerStickyCls}`}
                           style={{ width: columnWidths.type, minWidth: 60 }}
                         >
                           Type
@@ -2483,7 +2577,7 @@ export default function InventoryWireframe() {
                           />
                         </TableHead>
                         <TableHead 
-                          className="text-right whitespace-nowrap relative"
+                          className={`text-right whitespace-nowrap relative${headerStickyCls}`}
                           style={{ width: columnWidths.onHand, minWidth: 60 }}
                         >
                           On hand
@@ -2493,7 +2587,7 @@ export default function InventoryWireframe() {
                           />
                         </TableHead>
                         <TableHead 
-                          className="text-right whitespace-nowrap relative"
+                          className={`text-right whitespace-nowrap relative${headerStickyCls}`}
                           style={{ width: columnWidths.avgCost, minWidth: 60 }}
                         >
                           Avg. cost (FIFO)
@@ -2503,7 +2597,7 @@ export default function InventoryWireframe() {
                           />
                         </TableHead>
                         <TableHead 
-                          className="text-right whitespace-nowrap relative"
+                          className={`text-right whitespace-nowrap relative${headerStickyCls}`}
                           style={{ width: columnWidths.assetValue, minWidth: 60 }}
                         >
                           Asset value
@@ -2513,7 +2607,7 @@ export default function InventoryWireframe() {
                           />
                         </TableHead>
                         <TableHead 
-                          className="text-right whitespace-nowrap"
+                          className={`text-right whitespace-nowrap${headerStickyCls}`}
                           style={{ width: columnWidths.minimum, minWidth: 60 }}
                         >
                           Minimum

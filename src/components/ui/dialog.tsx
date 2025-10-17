@@ -39,7 +39,7 @@ export const Dialog: React.FC<DialogProps> = ({ open, onOpenChange, children }) 
         className="fixed inset-0 bg-black/50 backdrop-blur-sm"
         onClick={() => onOpenChange(false)}
       />
-      <div className="relative z-10 w-full max-w-lg mx-4">
+      <div className="relative z-10 w-full max-w-[95vw] px-4">
         {children}
       </div>
     </div>

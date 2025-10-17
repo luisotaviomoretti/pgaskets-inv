@@ -62,6 +62,8 @@ import {
 // Zod schema for runtime validation
 import { receivePayloadSchema } from '@/features/inventory/types/schemas';
 import { telemetry } from '@/features/inventory/services/telemetry';
+import { getFeatureFlag } from '@/lib/featureFlags';
+import { SkuPickerModal } from '@/features/inventory/components/SkuPicker';
 
 // Types for Receiving
 type DamageScope = 'NONE' | 'PARTIAL' | 'FULL';
@@ -724,6 +726,9 @@ export default function Receiving({ vendors, skus, layersBySku, movements, onUpd
   const [notes, setNotes] = useState('');
   const [packingSlipEdited, setPackingSlipEdited] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const skuPickerEnabled = getFeatureFlag('RECEIVING_SKU_PICKER_MODAL');
+  const [skuPickerOpen, setSkuPickerOpen] = useState(false);
+  const [skuPickerLineId, setSkuPickerLineId] = useState<string | null>(null);
   // Ref for modal container (focus management)
   const dialogRef = useRef<HTMLDivElement | null>(null);
 
@@ -1713,14 +1718,26 @@ export default function Receiving({ vendors, skus, layersBySku, movements, onUpd
                         {/* SKU Column */}
                         <div className={`px-3 py-3 min-h-[60px] ${hasErrors ? "bg-red-50" : ""} ${index > 0 ? "border-t" : ""}`}>
                           <div className="space-y-1">
-                            <SKUSelect 
-                              id={`sku-${line.id}`}
-                              skus={skus}
-                              value={line.skuId}
-                              onChange={(value) => updateReceivingLine(line.id, { skuId: value })}
-                              placeholder="Select SKU"
-                              error={errors[`line-${line.id}-sku`]}
-                            />
+                            {skuPickerEnabled ? (
+                              <Button
+                                type="button"
+                                variant="outline"
+                                className="w-full justify-start"
+                                onClick={() => { setSkuPickerLineId(line.id); setSkuPickerOpen(true); }}
+                                title={line.skuId ? skus.find(s => s.id === line.skuId)?.description || line.skuId : 'Pick SKU'}
+                              >
+                                {line.skuId ? `${line.skuId} — ${skus.find(s => s.id === line.skuId)?.description ?? ''}` : 'Pick SKU'}
+                              </Button>
+                            ) : (
+                              <SKUSelect 
+                                id={`sku-${line.id}`}
+                                skus={skus}
+                                value={line.skuId}
+                                onChange={(value) => updateReceivingLine(line.id, { skuId: value })}
+                                placeholder="Select SKU"
+                                error={errors[`line-${line.id}-sku`]}
+                              />
+                            )}
                             {errors[`line-${line.id}-sku`] && (
                               <div className="text-xs text-red-600 flex items-start gap-1 min-h-[16px] leading-tight">
                                 <AlertTriangle className="h-3 w-3 shrink-0 mt-0.5" />
@@ -2081,6 +2098,20 @@ export default function Receiving({ vendors, skus, layersBySku, movements, onUpd
           document.body
         )}
       </Card>
+
+      {/* SKU Picker Modal (feature-flagged) */}
+      {skuPickerEnabled && (
+        <SkuPickerModal
+          isOpen={skuPickerOpen}
+          onClose={() => setSkuPickerOpen(false)}
+          onConfirm={(selected) => {
+            if (!skuPickerLineId || selected.length === 0) return;
+            const sku = selected[0];
+            updateReceivingLine(skuPickerLineId, { skuId: sku.id });
+          }}
+          selectionMode="single"
+        />
+      )}
 
       {/* Recent Layers Section */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">

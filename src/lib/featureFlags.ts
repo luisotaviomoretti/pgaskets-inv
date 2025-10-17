@@ -19,6 +19,11 @@ export interface FeatureFlags {
 
   // Inventory features (new)
   INVENTORY_CATEGORIES: boolean;         // Manage Categories feature (DEV only initially)
+  RECEIVING_SKU_PICKER_MODAL: boolean;   // New SKU picker modal (default OFF)
+  WORKORDER_SKU_PICKER_MODAL: boolean;   // WO-specific SKU picker modal (independent rollout)
+  DASHBOARD_TOP_SCROLL: boolean;         // Top synced scrollbar + sticky header on Dashboard
+  DASHBOARD_STICKY_COLUMNS: boolean;     // Sticky first columns (Category, SKU) on Dashboard table
+  DASHBOARD_STICKY_FILTERS: boolean;     // Sticky filters + top scrollbar wrapper on Dashboard
 }
 
 // Environment-based defaults (safety first)
@@ -42,6 +47,11 @@ const getDefaultFlags = (): FeatureFlags => {
 
     // Inventory features
     INVENTORY_CATEGORIES: true,            // Now enabled in production
+    RECEIVING_SKU_PICKER_MODAL: true,      // Enabled per request; can be toggled at runtime
+    WORKORDER_SKU_PICKER_MODAL: true,      // Enabled for WO; independent flag
+    DASHBOARD_TOP_SCROLL: true,            // Enable Phase 1 by default (safe UI-only)
+    DASHBOARD_STICKY_COLUMNS: true,        // Enable Phase 2 by default (UI-only)
+    DASHBOARD_STICKY_FILTERS: true,        // Keep filters and top scrollbar visible
   };
 };
 

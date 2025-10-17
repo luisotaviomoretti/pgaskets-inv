@@ -11,6 +11,8 @@ import { Layers } from '@/components/ui/icons';
 import { workOrderPayloadSchema } from '@/features/inventory/types/schemas';
 import { processWorkOrder, getFIFOLayers } from '@/features/inventory/services/inventory.adapter';
 import { useWorkOrderEvents } from '@/features/inventory/utils/workOrderEvents';
+import { getFeatureFlag } from '@/lib/featureFlags';
+import { SkuPickerModal } from '@/features/inventory/components/SkuPicker';
 
 // Types for Work Order
 type SKU = { id: string; description?: string; type: 'RAW' | 'SELLABLE'; productCategory: string; unit?: string; onHand?: number };
@@ -165,6 +167,9 @@ export default function WorkOrder({ skus, layersBySku, onUpdateLayers, onUpdateS
   const [layersModalSku, setLayersModalSku] = useState<string | null>(null);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const woSkuPickerEnabled = getFeatureFlag('WORKORDER_SKU_PICKER_MODAL');
+  const [woSkuPickerOpen, setWoSkuPickerOpen] = useState(false);
+  const [woSkuPickerLineId, setWoSkuPickerLineId] = useState<string | null>(null);
 
   // Stable default WO reference id (idempotent across retries in same session)
   const defaultWOIdRef = useRef<string>('');
@@ -671,14 +676,27 @@ ${costBreakdown}`);
                     {rawMaterials.map((r) => (
                       <TableRow key={r.id}>
                         <TableCell className="min-w-[220px]">
-                          <SKUSelect
-                            skus={skus}
-                            value={r.skuId}
-                            onChange={(v) => updateRawMaterialLine(r.id, { skuId: v })}
-                            placeholder="Select SKU"
-                            id={`raw-sku-${r.id}`}
-                            error={errors[`raw-sku-${r.id}`]}
-                          />
+                          {woSkuPickerEnabled ? (
+                            <Button
+                              type="button"
+                              variant="outline"
+                              className="w-full justify-start"
+                              onClick={() => { setWoSkuPickerLineId(r.id); setWoSkuPickerOpen(true); }}
+                              title={r.skuId ? (skus.find(s => s.id === r.skuId)?.description || r.skuId) : 'Pick SKU'}
+                              id={`raw-sku-${r.id}`}
+                            >
+                              {r.skuId ? `${r.skuId} — ${skus.find(s => s.id === r.skuId)?.description ?? ''}` : 'Pick SKU'}
+                            </Button>
+                          ) : (
+                            <SKUSelect
+                              skus={skus}
+                              value={r.skuId}
+                              onChange={(v) => updateRawMaterialLine(r.id, { skuId: v })}
+                              placeholder="Select SKU"
+                              id={`raw-sku-${r.id}`}
+                              error={errors[`raw-sku-${r.id}`]}
+                            />
+                          )}
                           {errors[`raw-sku-${r.id}`] && (
                             <ErrorMessage id={`raw-sku-${r.id}-error`} message={errors[`raw-sku-${r.id}`]} />
                           )}
@@ -952,6 +970,21 @@ ${costBreakdown}`);
           </ul>
         </SectionCard>
       </div>
+
+      {/* WO SKU Picker Modal (feature-flagged, independent from Receiving) */}
+      {woSkuPickerEnabled && (
+        <SkuPickerModal
+          isOpen={woSkuPickerOpen}
+          onClose={() => setWoSkuPickerOpen(false)}
+          onConfirm={(selected) => {
+            if (!woSkuPickerLineId || selected.length === 0) return;
+            const sku = selected[0];
+            updateRawMaterialLine(woSkuPickerLineId, { skuId: sku.id });
+          }}
+          selectionMode="single"
+        />
+      )}
+
       {/* Layers modal */}
       {layersModalSku && (
         <div className="fixed inset-0 z-50" onClick={() => setLayersModalSku(null)}>
