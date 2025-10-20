@@ -729,6 +729,7 @@ export default function Receiving({ vendors, skus, layersBySku, movements, onUpd
   const skuPickerEnabled = getFeatureFlag('RECEIVING_SKU_PICKER_MODAL');
   const [skuPickerOpen, setSkuPickerOpen] = useState(false);
   const [skuPickerLineId, setSkuPickerLineId] = useState<string | null>(null);
+  const [layersSkuPickerOpen, setLayersSkuPickerOpen] = useState(false);
   // Ref for modal container (focus management)
   const dialogRef = useRef<HTMLDivElement | null>(null);
 
@@ -2113,6 +2114,20 @@ export default function Receiving({ vendors, skus, layersBySku, movements, onUpd
         />
       )}
 
+      {/* Layers SKU Picker Modal (feature-flagged, independent state) */}
+      {skuPickerEnabled && (
+        <SkuPickerModal
+          isOpen={layersSkuPickerOpen}
+          onClose={() => setLayersSkuPickerOpen(false)}
+          onConfirm={(selected) => {
+            if (selected.length === 0) return;
+            const sku = selected[0];
+            setSelectedLayersSku(sku.id);
+          }}
+          selectionMode="single"
+        />
+      )}
+
       {/* Recent Layers Section */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <div className="lg:col-span-2">
@@ -2124,18 +2139,30 @@ export default function Receiving({ vendors, skus, layersBySku, movements, onUpd
                   Inventory Layers (FIFO)
                 </CardTitle>
                 <div className="w-1/2">
-                  <Select value={selectedLayersSku} onValueChange={setSelectedLayersSku}>
-                    <SelectTrigger placeholder="Select a SKU...">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {skus.map(s => (
-                        <SelectItem key={s.id} value={s.id}>
-                          {s.id} — {s.description}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                  {skuPickerEnabled ? (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="w-full justify-start"
+                      onClick={() => setLayersSkuPickerOpen(true)}
+                      title={selectedLayersSku ? (skus.find(s => s.id === selectedLayersSku)?.description || selectedLayersSku) : 'Pick SKU'}
+                    >
+                      {selectedLayersSku ? `${selectedLayersSku} — ${skus.find(s => s.id === selectedLayersSku)?.description ?? ''}` : 'Pick SKU'}
+                    </Button>
+                  ) : (
+                    <Select value={selectedLayersSku} onValueChange={setSelectedLayersSku}>
+                      <SelectTrigger placeholder="Select a SKU...">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {skus.map(s => (
+                          <SelectItem key={s.id} value={s.id}>
+                            {s.id} — {s.description}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  )}
                 </div>
               </div>
             </CardHeader>
