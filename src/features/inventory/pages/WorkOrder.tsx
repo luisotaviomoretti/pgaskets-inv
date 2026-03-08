@@ -167,6 +167,8 @@ export default function WorkOrder({ skus, layersBySku, onUpdateLayers, onUpdateS
   const [layersModalSku, setLayersModalSku] = useState<string | null>(null);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [validationIssues, setValidationIssues] = useState<{ skuId: string; required: number; available: number; hasZeroStock: boolean }[]>([]);
   const woSkuPickerEnabled = getFeatureFlag('WORKORDER_SKU_PICKER_MODAL');
   const [woSkuPickerOpen, setWoSkuPickerOpen] = useState(false);
   const [woSkuPickerLineId, setWoSkuPickerLineId] = useState<string | null>(null);
@@ -499,41 +501,62 @@ export default function WorkOrder({ skus, layersBySku, onUpdateLayers, onUpdateS
   }, [woOutputName, woProducedQty, rawMaterials, totalRawQty, totalWasteQty, multiSkuPlans, hasMixedUnits]);
 
   const finalizeWO = async () => {
-    // Basic validations mirroring canFinalizeWO
+    // Clear previous validation issues
+    setValidationIssues([]);
+    const newErrors: Record<string, string> = {};
+
+    // --- Collect ALL validation issues at once ---
+    let hasErrors = false;
+
     if (!woOutputName.trim()) {
-      alert('Finished product name is required to finalize Work Order');
-      return;
+      newErrors['outputName'] = 'Finished product name is required.';
+      hasErrors = true;
     }
     if (!hasMixedUnits && woProducedQty <= 0) {
-      alert('Produced quantity must be greater than 0');
-      return;
+      newErrors['producedQty'] = 'Produced quantity must be greater than 0.';
+      hasErrors = true;
     }
 
     const activeRaw = rawMaterials.filter(r => r.skuId && r.qty > 0);
     if (activeRaw.length === 0) {
-      alert('Add at least one RAW material line with quantity > 0');
-      return;
+      newErrors['rawMaterials'] = 'At least one raw material with quantity greater than 0 is required.';
+      hasErrors = true;
     }
 
-    const producedQty = woProducedQty;
-    // Note: Removed restrictive balance validation - allows realistic industrial ratios
-
-    // Ensure sufficient inventory per SKU
+    // Check ALL SKUs for insufficient inventory (not just the first one)
+    const insufficientSkus: { skuId: string; required: number; available: number; hasZeroStock: boolean }[] = [];
     for (const p of multiSkuPlans) {
       if (!p.canFulfill) {
         const required = activeRaw.filter(r => r.skuId === p.skuId).reduce((s, r) => s + r.qty, 0);
         const available = getAvailableStock(p.skuId);
-        alert(`Insufficient inventory for SKU ${p.skuId}. Required: ${required}, Available: ${available}`);
-        return;
+        insufficientSkus.push({ skuId: p.skuId, required, available, hasZeroStock: available === 0 });
       }
     }
+
+    if (insufficientSkus.length > 0) {
+      setValidationIssues(insufficientSkus);
+      hasErrors = true;
+    }
+
+    if (hasErrors) {
+      setErrors(newErrors);
+      // If there are inventory issues, scroll to the banner (rendered at top of form)
+      if (insufficientSkus.length > 0) {
+        setTimeout(() => {
+          document.getElementById('wo-validation-banner')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }, 50);
+      }
+      return;
+    }
+
+    setErrors({});
+    const producedQty = woProducedQty;
 
     // Reference
     const woRef = (woId && woId.trim()) ? woId.trim() : defaultWOIdRef.current;
 
-    // Zod validation: build WorkOrderPayload and validate (keeping for UX consistency)
+    // Zod validation
     try {
-      const activeRaw = rawMaterials.filter(r => r.skuId && r.qty > 0);
       const raw = activeRaw.map(r => ({
         sku: r.skuId,
         unit: skus.find(s => s.id === r.skuId)?.unit || '',
@@ -559,9 +582,11 @@ export default function WorkOrder({ skus, layersBySku, onUpdateLayers, onUpdateS
       workOrderPayloadSchema.parse(payload);
     } catch (err: any) {
       const message = err?.errors?.[0]?.message || 'Invalid Work Order data. Please review the form.';
-      alert(message);
+      setErrors({ _form: message });
       return;
     }
+
+    setIsSubmitting(true);
     try {
       // Backend persistence via adapter
       const result = await processWorkOrder({
@@ -574,8 +599,8 @@ export default function WorkOrder({ skus, layersBySku, onUpdateLayers, onUpdateS
         notes: JSON.stringify({ client: woClient, invoice: woInvoice })
       });
 
-      // 🧪 Detailed logging for verification
-      console.log('🏭 Work Order Result Details:', {
+      // Detailed logging for verification
+      console.log('Work Order Result:', {
         workOrderId: result.workOrderId,
         outputQuantity: producedQty,
         outputName: woOutputName.trim(),
@@ -585,27 +610,21 @@ export default function WorkOrder({ skus, layersBySku, onUpdateLayers, onUpdateS
           netProduceCost: result.netProduceCost || (result.totalRawCost - result.totalWasteCost),
           outputUnitCost: result.outputUnitCost
         },
-        hasMixedUnits,
-        rawMaterials: rawMaterials.filter(r => r.skuId && r.qty > 0),
-        wasteLines: wasteLines.filter(w => w.wasteQty > 0),
         result
       });
 
       // Enhanced success message with cost breakdown
       const netCost = result.netProduceCost || (result.totalRawCost - result.totalWasteCost);
       const costBreakdown = `
-📊 Cost Breakdown:
-• RAW Materials: $${result.totalRawCost?.toFixed(2) || '0.00'}
-• WASTE: $${result.totalWasteCost?.toFixed(2) || '0.00'}
-• NET PRODUCE: $${netCost?.toFixed(2) || '0.00'}
-• Unit Cost: $${result.outputUnitCost?.toFixed(2) || '0.00'}/${producedQty} units`;
+Cost Breakdown:
+  RAW Materials: $${result.totalRawCost?.toFixed(2) || '0.00'}
+  WASTE: $${result.totalWasteCost?.toFixed(2) || '0.00'}
+  NET PRODUCE: $${netCost?.toFixed(2) || '0.00'}
+  Unit Cost: $${result.outputUnitCost?.toFixed(2) || '0.00'} / ${producedQty} units`;
 
-      alert(`✅ Work Order ${result.workOrderId} finalized successfully!
-${producedQty} units of "${woOutputName.trim()}" produced.
+      alert(`Work Order ${result.workOrderId} finalized successfully!\n${producedQty} units of "${woOutputName.trim()}" produced.\n${costBreakdown}`);
 
-${costBreakdown}`);
-
-      // 🚀 REAL-TIME EVENT: Emit work order completion for instant UI updates
+      // Emit work order completion for instant UI updates
       emitWorkOrderCompleted({
         workOrderId: result.workOrderId,
         outputName: woOutputName.trim(),
@@ -613,16 +632,14 @@ ${costBreakdown}`);
         totalRawCost: result.totalRawCost || 0
       });
 
-      // 🔄 REQUEST IMMEDIATE REFRESH: Trigger movements refresh without delay
+      // Trigger movements refresh
       emitMovementsRefreshRequested('WorkOrder.finalizeWO');
 
       // Refresh UI data after persistence
-      // 1) Reload layers for each affected RAW SKU directly from backend (fifo_layers)
       const affectedSkus = Array.from(new Set(rawMaterials.filter(r => r.skuId && r.qty > 0).map(r => r.skuId)));
       for (const skuId of affectedSkus) {
         try {
           const latest = await getFIFOLayers(skuId);
-          // Map LayerLite -> Layer with normalized string date
           const mapped: Layer[] = latest.map((l: any) => {
             const d = l.date instanceof Date ? l.date : new Date(l.date);
             const dateStr = isNaN(d.getTime()) ? String(l.date) : d.toISOString().split('T')[0];
@@ -630,24 +647,43 @@ ${costBreakdown}`);
           });
           onUpdateLayers && onUpdateLayers(skuId, mapped);
         } catch (e) {
-          // eslint-disable-next-line no-console
           console.error('Failed to refresh layers for', skuId, e);
         }
       }
 
-      // 2) Ask parent to refresh inventory summary and movement list
+      // Ask parent to refresh inventory summary and movement list
       onRefreshInventory && onRefreshInventory();
 
-      // Reset form
+      // Reset form and validation state
       setRawMaterials([{ id: '1', skuId: '', qty: 0, notes: '' }]);
       setWasteLines([]);
       setWoOutputName('');
       setWoProducedQty(0);
       setWoClient('');
       setWoInvoice('');
+      setValidationIssues([]);
+      setErrors({});
     } catch (err: any) {
-      const msg = err?.message || 'Failed to finalize Work Order. Please try again.';
-      alert(msg);
+      // Classify and present meaningful error messages
+      const rawMsg = err?.message || '';
+      let userMessage: string;
+
+      if (rawMsg.includes('Insufficient stock') || rawMsg.includes('Could not consume full quantity')) {
+        // Race condition: inventory changed between validation and execution
+        userMessage = 'Inventory levels have changed since this form was loaded. Please refresh the page and review available stock before resubmitting.';
+      } else if (rawMsg.includes('fetch') || rawMsg.includes('network') || rawMsg.includes('Failed to fetch') || rawMsg.includes('timeout') || rawMsg.includes('ERR_NETWORK')) {
+        userMessage = 'A connection issue occurred while processing this Work Order. Please check the Work Order list to confirm whether it was created before attempting again.';
+      } else if (rawMsg.includes('23514') || rawMsg.includes('constraint') || rawMsg.includes('Integrity violation')) {
+        userMessage = 'An unexpected error occurred while processing this Work Order. Please contact your system administrator if the issue persists.\n\nTechnical detail: ' + rawMsg;
+      } else if (rawMsg) {
+        userMessage = rawMsg;
+      } else {
+        userMessage = 'Failed to finalize Work Order. Please try again.';
+      }
+
+      alert(userMessage);
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
@@ -659,6 +695,59 @@ ${costBreakdown}`);
             <Badge>WO-00425</Badge>
             <Badge variant="secondary">OPEN</Badge>
           </div>
+          {/* Validation banner for inventory issues */}
+          {validationIssues.length > 0 && (
+            <div id="wo-validation-banner" className="rounded-xl border border-red-200 bg-red-50 p-4 mb-4">
+              <div className="flex items-start gap-3">
+                <div className="shrink-0 mt-0.5 text-red-600 font-bold text-lg">!</div>
+                <div className="space-y-2 w-full">
+                  <p className="text-sm font-medium text-red-800">
+                    The following materials do not have enough inventory to fulfill this Work Order. Please adjust quantities or receive additional stock before proceeding.
+                  </p>
+                  <div className="rounded-lg border border-red-200 bg-white overflow-hidden">
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead className="text-red-700">SKU</TableHead>
+                          <TableHead className="text-red-700 text-right">Required</TableHead>
+                          <TableHead className="text-red-700 text-right">Available</TableHead>
+                          <TableHead className="text-red-700">Issue</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {validationIssues.map(v => (
+                          <TableRow key={v.skuId}>
+                            <TableCell className="font-mono text-xs">{v.skuId}</TableCell>
+                            <TableCell className="text-right font-medium">{v.required}</TableCell>
+                            <TableCell className="text-right font-medium text-red-600">{v.available}</TableCell>
+                            <TableCell className="text-xs text-red-600">
+                              {v.hasZeroStock
+                                ? 'No inventory available. A Receiving must be completed for this item before it can be used.'
+                                : `Short by ${(v.required - v.available).toFixed(2)} units. Reduce the quantity or receive more stock.`
+                              }
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Form-level error banner */}
+          {errors['_form'] && (
+            <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 mb-4 text-sm text-amber-800">
+              {errors['_form']}
+            </div>
+          )}
+          {errors['rawMaterials'] && (
+            <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 mb-4 text-sm text-amber-800">
+              {errors['rawMaterials']}
+            </div>
+          )}
+
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             <div className="md:col-span-2">
               <Label className="text-xs text-slate-500 mb-1.5">1) Raw material consumption (FIFO from oldest layers)</Label>
@@ -673,14 +762,17 @@ ${costBreakdown}`);
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {rawMaterials.map((r) => (
-                      <TableRow key={r.id}>
+                    {rawMaterials.map((r) => {
+                      const hasIssue = validationIssues.some(v => v.skuId === r.skuId);
+                      const issueDetail = validationIssues.find(v => v.skuId === r.skuId);
+                      return (
+                      <TableRow key={r.id} className={hasIssue ? 'bg-red-50' : ''}>
                         <TableCell className="min-w-[220px]">
                           {woSkuPickerEnabled ? (
                             <Button
                               type="button"
                               variant="outline"
-                              className="w-full justify-start"
+                              className="w-full justify-start h-auto min-h-10 whitespace-normal text-left py-2"
                               onClick={() => { setWoSkuPickerLineId(r.id); setWoSkuPickerOpen(true); }}
                               title={r.skuId ? (skus.find(s => s.id === r.skuId)?.description || r.skuId) : 'Pick SKU'}
                               id={`raw-sku-${r.id}`}
@@ -700,6 +792,14 @@ ${costBreakdown}`);
                           {errors[`raw-sku-${r.id}`] && (
                             <ErrorMessage id={`raw-sku-${r.id}-error`} message={errors[`raw-sku-${r.id}`]} />
                           )}
+                          {hasIssue && issueDetail && (
+                            <div className="text-xs text-red-600 mt-1 leading-snug">
+                              {issueDetail.hasZeroStock
+                                ? 'No inventory available. Complete a Receiving first.'
+                                : `Only ${issueDetail.available} available (need ${issueDetail.required}).`
+                              }
+                            </div>
+                          )}
                         </TableCell>
                         <TableCell>
                           <div className="flex items-center gap-2">
@@ -711,9 +811,9 @@ ${costBreakdown}`);
                               value={r.qty || ''}
                               onChange={(e) => updateRawMaterialLine(r.id, { qty: Math.max(0, parseFloat(e.target.value || '0')) })}
                               placeholder="0"
-                              aria-invalid={!!errors[`raw-qty-${r.id}`]}
+                              aria-invalid={!!errors[`raw-qty-${r.id}`] || hasIssue}
                               aria-describedby={errors[`raw-qty-${r.id}`] ? `raw-qty-${r.id}-error` : undefined}
-                              className={`flex-1 h-10 ${errors[`raw-qty-${r.id}`] ? 'border-red-500 focus:ring-red-500' : ''}`}
+                              className={`flex-1 h-10 ${(errors[`raw-qty-${r.id}`] || hasIssue) ? 'border-red-500 focus:ring-red-500' : ''}`}
                             />
                             <span className="text-xs text-slate-500 min-w-[36px] text-right">
                               {skus.find(s => s.id === r.skuId)?.unit ?? ''}
@@ -748,7 +848,7 @@ ${costBreakdown}`);
                           </div>
                         </TableCell>
                       </TableRow>
-                    ))}
+                    );})}
                   </TableBody>
                 </Table>
                 <div className="flex items-center justify-between pt-2 text-xs text-slate-500">
@@ -869,42 +969,48 @@ ${costBreakdown}`);
             </div>
 
             <div className="md:col-span-2 flex items-center gap-2">
-              {/* NAV-80: Disable button based on same conditions as finalizeWO() */}
-              <Button 
-                className="rounded-xl" 
-                onClick={() => setConfirmOpen(true)}
-                disabled={!canFinalizeWO}
+              <Button
+                className="rounded-xl"
+                onClick={() => { setValidationIssues([]); setErrors({}); setConfirmOpen(true); }}
+                disabled={!canFinalizeWO || isSubmitting}
               >
-                Finalize WO
+                {isSubmitting ? 'Processing...' : 'Finalize WO'}
               </Button>
               {!canFinalizeWO && (
                 <Button
                   type="button"
                   variant="outline"
-                  className="rounded-xl"
+                  className="rounded-xl text-xs"
                   onClick={() => {
-                    // Debug function to show what's preventing finalization
-                    const issues = [];
-                    if (!woOutputName.trim()) issues.push("❌ Finished product name is required");
-                    if (!hasMixedUnits && woProducedQty <= 0) issues.push("❌ Produced quantity must be > 0");
-                    
+                    // Pre-validate and show all issues inline
+                    const issues: { skuId: string; required: number; available: number; hasZeroStock: boolean }[] = [];
+                    const newErrors: Record<string, string> = {};
+
+                    if (!woOutputName.trim()) newErrors['outputName'] = 'Finished product name is required.';
+                    if (!hasMixedUnits && woProducedQty <= 0) newErrors['producedQty'] = 'Produced quantity must be greater than 0.';
+
                     const activeRaw = rawMaterials.filter(r => r.skuId && r.qty > 0);
-                    if (activeRaw.length === 0) issues.push("❌ Add at least one RAW material line with quantity > 0");
-                    
-                    // Note: Removed restrictive balance validation - allows realistic industrial ratios
-                    
+                    if (activeRaw.length === 0) newErrors['rawMaterials'] = 'At least one raw material with quantity greater than 0 is required.';
+
                     for (const p of multiSkuPlans) {
                       if (!p.canFulfill) {
                         const required = rawMaterials.filter(r => r.skuId === p.skuId).reduce((s, r) => s + r.qty, 0);
                         const available = getAvailableStock(p.skuId);
-                        issues.push(`❌ Insufficient stock for ${p.skuId}: need ${required}, available ${available}`);
+                        issues.push({ skuId: p.skuId, required, available, hasZeroStock: available === 0 });
                       }
                     }
-                    
-                    alert("Cannot finalize Work Order:\n\n" + issues.join("\n"));
+
+                    setErrors(newErrors);
+                    setValidationIssues(issues);
+
+                    if (issues.length > 0) {
+                      setTimeout(() => {
+                        document.getElementById('wo-validation-banner')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                      }, 50);
+                    }
                   }}
                 >
-                  Debug issues
+                  Why can't I finalize?
                 </Button>
               )}
             </div>
@@ -1089,8 +1195,10 @@ ${costBreakdown}`);
                   {woInvoice && (<div><span className="text-slate-500">Invoice:</span> <b>{woInvoice}</b></div>)}
                 </div>
                 <div className="flex items-center justify-end gap-2 pt-2">
-                  <Button variant="outline" onClick={() => setConfirmOpen(false)}>Cancel</Button>
-                  <Button onClick={() => { setConfirmOpen(false); finalizeWO(); }}>Confirm & Finalize</Button>
+                  <Button variant="outline" onClick={() => setConfirmOpen(false)} disabled={isSubmitting}>Cancel</Button>
+                  <Button onClick={() => { setConfirmOpen(false); finalizeWO(); }} disabled={isSubmitting}>
+                    {isSubmitting ? 'Processing...' : 'Confirm & Finalize'}
+                  </Button>
                 </div>
               </div>
             </div>

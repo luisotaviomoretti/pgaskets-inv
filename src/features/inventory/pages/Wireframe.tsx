@@ -908,15 +908,20 @@ function SKUsManager({
           )}
           <div className="sm:col-span-3">
             <Label htmlFor="sku-code" className="mb-1.5 block">Code *</Label>
-            <Input 
+            <Input
               id="sku-code"
-              className={`w-full h-10 ${errors.id ? 'border-red-500 focus:ring-red-500' : ''}`}
-              value={form.id} 
-              onChange={e => setForm({ ...form, id: e.target.value })} 
+              className={`w-full h-10 ${errors.id ? 'border-red-500 focus:ring-red-500' : ''} ${editingIndex !== null ? 'bg-slate-100 text-slate-500 cursor-not-allowed' : ''}`}
+              value={form.id}
+              onChange={e => { if (editingIndex === null) setForm({ ...form, id: e.target.value }); }}
               placeholder="SKU-001"
+              readOnly={editingIndex !== null}
+              title={editingIndex !== null ? 'The SKU code serves as the primary identifier and is linked to inventory layers, cost history, and movement records. Changing it would break these associations and compromise data integrity.' : undefined}
               aria-invalid={!!errors.id}
               aria-describedby={errors.id ? 'sku-code-error' : undefined}
             />
+            {editingIndex !== null && (
+              <div className="text-xs text-slate-400 mt-1 leading-snug">The SKU code is a unique identifier tied to inventory layers and cost records. It cannot be modified after creation.</div>
+            )}
             {errors.id && (<div id="sku-code-error" className="text-sm text-red-600 mt-1">{errors.id}</div>)}
           </div>
           <div className="sm:col-span-5">

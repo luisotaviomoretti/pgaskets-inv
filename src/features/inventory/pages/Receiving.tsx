@@ -1723,7 +1723,7 @@ export default function Receiving({ vendors, skus, layersBySku, movements, onUpd
                               <Button
                                 type="button"
                                 variant="outline"
-                                className="w-full justify-start"
+                                className="w-full justify-start h-auto min-h-10 whitespace-normal text-left py-2"
                                 onClick={() => { setSkuPickerLineId(line.id); setSkuPickerOpen(true); }}
                                 title={line.skuId ? skus.find(s => s.id === line.skuId)?.description || line.skuId : 'Pick SKU'}
                               >
@@ -2143,7 +2143,7 @@ export default function Receiving({ vendors, skus, layersBySku, movements, onUpd
                     <Button
                       type="button"
                       variant="outline"
-                      className="w-full justify-start"
+                      className="w-full justify-start h-auto min-h-10 whitespace-normal text-left py-2"
                       onClick={() => setLayersSkuPickerOpen(true)}
                       title={selectedLayersSku ? (skus.find(s => s.id === selectedLayersSku)?.description || selectedLayersSku) : 'Pick SKU'}
                     >
