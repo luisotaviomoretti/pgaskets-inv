@@ -360,7 +360,7 @@ function CategoriesManager({
                   <div className="flex justify-end gap-2">
                     <Button size="sm" variant="outline" onClick={() => startRename(i)}>Rename</Button>
                     <Button size="sm" variant="outline" onClick={() => startEdit(i)}>Edit</Button>
-                    <Button size="sm" variant="outline" className="text-red-600" onClick={() => askDelete(i)}>{items[i]?.active ? 'Deactivate' : 'Delete'}</Button>
+                    <Button size="sm" variant="destructive" onClick={() => askDelete(i)}>{items[i]?.active ? 'Deactivate' : 'Delete'}</Button>
                   </div>
                 )}
               </TableCell>
@@ -1005,10 +1005,10 @@ function SKUsManager({
                     ) : (
                       <div className="flex justify-end gap-2">
                         <Button size="sm" variant="outline" onClick={() => startEdit(i)}>Edit</Button>
-                        <Button 
-                          size="sm" 
-                          variant="outline" 
-                          className={hasStock ? "text-gray-400 cursor-not-allowed" : "text-red-600"} 
+                        <Button
+                          size="sm"
+                          variant={hasStock ? "outline" : "destructive"}
+                          className={hasStock ? "text-gray-400 cursor-not-allowed" : ""}
                           onClick={() => askDelete(i)}
                           disabled={hasStock}
                           title={hasStock ? `Cannot delete: SKU has ${s.onHand} units in stock` : "Delete SKU"}
@@ -1235,7 +1235,7 @@ function VendorsManager({
                 ) : (
                   <div className="flex justify-end gap-2">
                     <Button size="sm" variant="outline" onClick={() => startEdit(i)}>Edit</Button>
-                    <Button size="sm" variant="outline" className="text-red-600" onClick={() => askDelete(i)}>Delete</Button>
+                    <Button size="sm" variant="destructive" onClick={() => askDelete(i)}>Delete</Button>
                   </div>
                 )}
               </TableCell>
@@ -1267,6 +1267,7 @@ export default function InventoryWireframe() {
   // Movement log for tracking inventory transactions
   const [movementLog, setMovementLog] = useState<MovementLogEntry[]>([]);
   const [isLoadingMovements, setIsLoadingMovements] = useState(false);
+  const [isLoadingInventory, setIsLoadingInventory] = useState(true);
   
   // Strategy 2: Smart refresh with debouncing (defined first to avoid circular deps)
   const smartRefresh = useCallback(() => {
@@ -1370,13 +1371,14 @@ export default function InventoryWireframe() {
 
   // Load Inventory Summary (inventory_summary view) and SKU master data
   const loadInventorySummary = useCallback(async () => {
+    setIsLoadingInventory(true);
     try {
       const summary = await skuOperations.getInventorySummary();
       // The adapter already returns UI-shaped items compatible with our SKU usage
       const summarySkus = (summary || []) as unknown as SKU[];
       setSkus(summarySkus);
       setSkuMaster(summarySkus); // Keep master data in sync
-      
+
       // Build avg cost map
       const costMap: Record<string, number> = {};
       for (const r of summary || []) {
@@ -1386,6 +1388,8 @@ export default function InventoryWireframe() {
     } catch (err) {
       console.error('loadInventorySummary error', err);
       // keep UI usable even if summary fails
+    } finally {
+      setIsLoadingInventory(false);
     }
   }, []);
 
@@ -2223,6 +2227,16 @@ export default function InventoryWireframe() {
     </div>
   );
 
+  // Sort indicator for column headers
+  const SortIndicator = ({ column }: { column: string }) => {
+    const active =
+      (sortMode === 'category' && column === 'category') ||
+      (sortMode === 'quantity' && column === 'onHand') ||
+      (sortMode === 'redFlags' && column === 'status');
+    if (!active) return null;
+    return <span className="ml-1 text-blue-500 text-[10px]" aria-label="Sorted column">{sortMode === 'category' ? '\u25B2' : '\u25BC'}</span>;
+  };
+
   // Phase 1: Top synced scrollbar + sticky header (feature-flagged)
   const dashboardTopScrollEnabled = getFeatureFlag('DASHBOARD_TOP_SCROLL');
   const topScrollRef = useRef<HTMLDivElement | null>(null);
@@ -2319,7 +2333,7 @@ export default function InventoryWireframe() {
 
       <main className="max-w-6xl mx-auto px-4 py-6">
         <Tabs value={tab} onValueChange={setTab}>
-          <TabsList className="grid grid-cols-4 w-full rounded-2xl">
+          <TabsList className="grid grid-cols-2 md:grid-cols-4 w-full rounded-2xl">
             <TabsTrigger value="dashboard">Dashboard</TabsTrigger>
             <TabsTrigger value="receiving" className="flex items-center justify-center gap-2">
               <Package className="h-4 w-4" />
@@ -2436,7 +2450,10 @@ export default function InventoryWireframe() {
                 {stickyFiltersEnabled ? (
                   <div className="sticky top-[120px] z-20 bg-white/95 backdrop-blur border-b">
                     <div className="flex items-center justify-between gap-2 px-0 py-2">
-                      <div className="text-xs text-slate-500">Traffic light: green = above minimum • red = below minimum</div>
+                      <div className="flex items-center gap-3 text-xs text-slate-500">
+                        <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full bg-emerald-500"></span> Above minimum</span>
+                        <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full bg-red-500"></span> Below minimum</span>
+                      </div>
                       <div className="flex items-center gap-2">
                         <Select value={sortMode} onValueChange={(value) => setSortMode(value as typeof sortMode)}>
                           <SelectTrigger className="h-8 w-[200px] rounded-xl">
@@ -2474,7 +2491,10 @@ export default function InventoryWireframe() {
                 ) : (
                   <>
                     <div className="flex items-center justify-between gap-2 mb-3">
-                      <div className="text-xs text-slate-500">Traffic light: green = above minimum • red = below minimum</div>
+                      <div className="flex items-center gap-3 text-xs text-slate-500">
+                        <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full bg-emerald-500"></span> Above minimum</span>
+                        <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full bg-red-500"></span> Below minimum</span>
+                      </div>
                       <div className="flex items-center gap-2">
                         <Select value={sortMode} onValueChange={(value) => setSortMode(value as typeof sortMode)}>
                           <SelectTrigger className="h-8 w-[200px] rounded-xl">
@@ -2522,9 +2542,9 @@ export default function InventoryWireframe() {
                           className={`whitespace-nowrap relative${headerStickyCls}${left0}`}
                           style={{ width: columnWidths.category, minWidth: 60 }}
                         >
-                          Category
-                          <div 
-                            className="absolute top-0 right-0 w-1 h-full cursor-col-resize bg-transparent hover:bg-blue-300 opacity-0 hover:opacity-50"
+                          Category<SortIndicator column="category" />
+                          <div
+                            className="absolute top-0 right-0 w-1 h-full cursor-col-resize bg-slate-200 opacity-30 hover:bg-blue-400 hover:opacity-70 transition-opacity"
                             onMouseDown={(e) => handleMouseDown('category', e)}
                           />
                           {stickyColsEnabled && showEdgeShadow && (
@@ -2537,7 +2557,7 @@ export default function InventoryWireframe() {
                         >
                           SKU
                           <div 
-                            className="absolute top-0 right-0 w-1 h-full cursor-col-resize bg-transparent hover:bg-blue-300 opacity-0 hover:opacity-50"
+                            className="absolute top-0 right-0 w-1 h-full cursor-col-resize bg-slate-200 opacity-30 hover:bg-blue-400 hover:opacity-70 transition-opacity"
                             onMouseDown={(e) => handleMouseDown('sku', e)}
                           />
                         </TableHead>
@@ -2547,7 +2567,7 @@ export default function InventoryWireframe() {
                         >
                           Description
                           <div 
-                            className="absolute top-0 right-0 w-1 h-full cursor-col-resize bg-transparent hover:bg-blue-300 opacity-0 hover:opacity-50"
+                            className="absolute top-0 right-0 w-1 h-full cursor-col-resize bg-slate-200 opacity-30 hover:bg-blue-400 hover:opacity-70 transition-opacity"
                             onMouseDown={(e) => handleMouseDown('description', e)}
                           />
                         </TableHead>
@@ -2555,9 +2575,9 @@ export default function InventoryWireframe() {
                           className={`whitespace-nowrap relative${headerStickyCls}`}
                           style={{ width: columnWidths.status, minWidth: 60 }}
                         >
-                          Status
-                          <div 
-                            className="absolute top-0 right-0 w-1 h-full cursor-col-resize bg-transparent hover:bg-blue-300 opacity-0 hover:opacity-50"
+                          Status<SortIndicator column="status" />
+                          <div
+                            className="absolute top-0 right-0 w-1 h-full cursor-col-resize bg-slate-200 opacity-30 hover:bg-blue-400 hover:opacity-70 transition-opacity"
                             onMouseDown={(e) => handleMouseDown('status', e)}
                           />
                         </TableHead>
@@ -2567,7 +2587,7 @@ export default function InventoryWireframe() {
                         >
                           U/M
                           <div 
-                            className="absolute top-0 right-0 w-1 h-full cursor-col-resize bg-transparent hover:bg-blue-300 opacity-0 hover:opacity-50"
+                            className="absolute top-0 right-0 w-1 h-full cursor-col-resize bg-slate-200 opacity-30 hover:bg-blue-400 hover:opacity-70 transition-opacity"
                             onMouseDown={(e) => handleMouseDown('unit', e)}
                           />
                         </TableHead>
@@ -2577,7 +2597,7 @@ export default function InventoryWireframe() {
                         >
                           Type
                           <div 
-                            className="absolute top-0 right-0 w-1 h-full cursor-col-resize bg-transparent hover:bg-blue-300 opacity-0 hover:opacity-50"
+                            className="absolute top-0 right-0 w-1 h-full cursor-col-resize bg-slate-200 opacity-30 hover:bg-blue-400 hover:opacity-70 transition-opacity"
                             onMouseDown={(e) => handleMouseDown('type', e)}
                           />
                         </TableHead>
@@ -2585,9 +2605,9 @@ export default function InventoryWireframe() {
                           className={`text-right whitespace-nowrap relative${headerStickyCls}`}
                           style={{ width: columnWidths.onHand, minWidth: 60 }}
                         >
-                          On hand
-                          <div 
-                            className="absolute top-0 right-0 w-1 h-full cursor-col-resize bg-transparent hover:bg-blue-300 opacity-0 hover:opacity-50"
+                          On hand<SortIndicator column="onHand" />
+                          <div
+                            className="absolute top-0 right-0 w-1 h-full cursor-col-resize bg-slate-200 opacity-30 hover:bg-blue-400 hover:opacity-70 transition-opacity"
                             onMouseDown={(e) => handleMouseDown('onHand', e)}
                           />
                         </TableHead>
@@ -2597,7 +2617,7 @@ export default function InventoryWireframe() {
                         >
                           Avg. cost (FIFO)
                           <div 
-                            className="absolute top-0 right-0 w-1 h-full cursor-col-resize bg-transparent hover:bg-blue-300 opacity-0 hover:opacity-50"
+                            className="absolute top-0 right-0 w-1 h-full cursor-col-resize bg-slate-200 opacity-30 hover:bg-blue-400 hover:opacity-70 transition-opacity"
                             onMouseDown={(e) => handleMouseDown('avgCost', e)}
                           />
                         </TableHead>
@@ -2607,7 +2627,7 @@ export default function InventoryWireframe() {
                         >
                           Asset value
                           <div 
-                            className="absolute top-0 right-0 w-1 h-full cursor-col-resize bg-transparent hover:bg-blue-300 opacity-0 hover:opacity-50"
+                            className="absolute top-0 right-0 w-1 h-full cursor-col-resize bg-slate-200 opacity-30 hover:bg-blue-400 hover:opacity-70 transition-opacity"
                             onMouseDown={(e) => handleMouseDown('assetValue', e)}
                           />
                         </TableHead>
@@ -2620,47 +2640,70 @@ export default function InventoryWireframe() {
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {sortedSkus.map((sku, index) => {
-                        const qty = sku.onHand ?? 0;
-                        const min = sku.min ?? 0;
-                        const ok = qty >= min;
-                        const avg = avgCostFor(sku.id);
-                        
-                        return (
-                          <TableRow key={`${sku.id}-${index}`}>
-                            <TableCell className="font-medium" style={{ width: columnWidths.category, minWidth: 60 }}>
-                              {sku.categoryName}
-                            </TableCell>
-                            <TableCell className="font-medium" style={{ width: columnWidths.sku, minWidth: 60 }}>
-                              {sku.id}
-                            </TableCell>
-                            <TableCell style={{ width: columnWidths.description, minWidth: 60 }}>
-                              {sku.description ?? '-'}
-                            </TableCell>
-                            <TableCell style={{ width: columnWidths.status, minWidth: 60 }}>
-                              <TrafficLight ok={ok} />
-                            </TableCell>
-                            <TableCell style={{ width: columnWidths.unit, minWidth: 60 }}>
-                              {sku.unit ?? '-'}
-                            </TableCell>
-                            <TableCell style={{ width: columnWidths.type, minWidth: 60 }}>
-                              {sku.type === 'RAW' ? 'Raw' : 'Sellable'}
-                            </TableCell>
-                            <TableCell className="text-right tabular-nums" style={{ width: columnWidths.onHand, minWidth: 60 }}>
-                              {fmtInt(qty)}
-                            </TableCell>
-                            <TableCell className="text-right tabular-nums" style={{ width: columnWidths.avgCost, minWidth: 60 }}>
-                              {avg != null ? fmtMoney(avg) : '—'}
-                            </TableCell>
-                            <TableCell className="text-right tabular-nums" style={{ width: columnWidths.assetValue, minWidth: 60 }}>
-                              {avg != null ? fmtMoney(qty * avg) : '—'}
-                            </TableCell>
-                            <TableCell className="text-right tabular-nums" style={{ width: columnWidths.minimum, minWidth: 60 }}>
-                              {fmtInt(min)}
-                            </TableCell>
+                      {isLoadingInventory ? (
+                        // Skeleton loading rows
+                        Array.from({ length: 8 }).map((_, i) => (
+                          <TableRow key={`skeleton-${i}`}>
+                            {Array.from({ length: 10 }).map((_, j) => (
+                              <TableCell key={j}>
+                                <div className="h-4 bg-slate-200 rounded animate-pulse" style={{ width: `${50 + Math.random() * 40}%` }} />
+                              </TableCell>
+                            ))}
                           </TableRow>
-                        );
-                      })}
+                        ))
+                      ) : sortedSkus.length === 0 ? (
+                        <TableRow>
+                          <TableCell colSpan={10} className="h-32 text-center">
+                            <div className="flex flex-col items-center gap-2 text-slate-500">
+                              <Layers className="h-8 w-8 text-slate-300" />
+                              <p className="text-sm font-medium">No SKUs match the current filters</p>
+                              <p className="text-xs text-slate-400">Try adjusting the type filter or sort criteria</p>
+                            </div>
+                          </TableCell>
+                        </TableRow>
+                      ) : (
+                        sortedSkus.map((sku, index) => {
+                          const qty = sku.onHand ?? 0;
+                          const min = sku.min ?? 0;
+                          const ok = qty >= min;
+                          const avg = avgCostFor(sku.id);
+
+                          return (
+                            <TableRow key={`${sku.id}-${index}`}>
+                              <TableCell className="font-medium" style={{ width: columnWidths.category, minWidth: 60 }}>
+                                {sku.categoryName}
+                              </TableCell>
+                              <TableCell className="font-medium" style={{ width: columnWidths.sku, minWidth: 60 }}>
+                                {sku.id}
+                              </TableCell>
+                              <TableCell style={{ width: columnWidths.description, minWidth: 60 }}>
+                                {sku.description ?? '-'}
+                              </TableCell>
+                              <TableCell style={{ width: columnWidths.status, minWidth: 60 }}>
+                                <TrafficLight ok={ok} />
+                              </TableCell>
+                              <TableCell style={{ width: columnWidths.unit, minWidth: 60 }}>
+                                {sku.unit ?? '-'}
+                              </TableCell>
+                              <TableCell style={{ width: columnWidths.type, minWidth: 60 }}>
+                                {sku.type === 'RAW' ? 'Raw' : 'Sellable'}
+                              </TableCell>
+                              <TableCell className="text-right tabular-nums" style={{ width: columnWidths.onHand, minWidth: 60 }}>
+                                {fmtInt(qty)}
+                              </TableCell>
+                              <TableCell className="text-right tabular-nums" style={{ width: columnWidths.avgCost, minWidth: 60 }}>
+                                {avg != null ? fmtMoney(avg) : '—'}
+                              </TableCell>
+                              <TableCell className="text-right tabular-nums" style={{ width: columnWidths.assetValue, minWidth: 60 }}>
+                                {avg != null ? fmtMoney(qty * avg) : '—'}
+                              </TableCell>
+                              <TableCell className="text-right tabular-nums" style={{ width: columnWidths.minimum, minWidth: 60 }}>
+                                {fmtInt(min)}
+                              </TableCell>
+                            </TableRow>
+                          );
+                        })
+                      )}
                     </TableBody>
                   </Table>
                 </div>

@@ -26,15 +26,15 @@ interface MovementsProps {
   onRefreshMovements?: () => void; // New prop for triggering movements refresh
 }
 
-// Movement type badge colors
-function getMovementBadgeVariant(type: MovementType): "default" | "secondary" | "destructive" {
+// Movement type badge colors — distinct colors for quick scanning
+function getMovementBadgeVariant(type: MovementType): "default" | "secondary" | "destructive" | "success" | "warning" {
   switch (type) {
-    case MovementType.RECEIVE: return 'default';
-    case MovementType.PRODUCE: return 'default';
-    case MovementType.ISSUE: return 'secondary';
-    case MovementType.WASTE: return 'secondary';
-    case MovementType.DAMAGE: return 'destructive';
-    case MovementType.ADJUSTMENT: return 'destructive'; // Red for adjustments (typically negative)
+    case MovementType.RECEIVE: return 'success';       // Green — stock coming in
+    case MovementType.PRODUCE: return 'default';       // Dark — production / COGS
+    case MovementType.ISSUE: return 'warning';         // Amber — material usage
+    case MovementType.WASTE: return 'destructive';     // Red — waste / loss
+    case MovementType.DAMAGE: return 'destructive';    // Red — damage
+    case MovementType.ADJUSTMENT: return 'secondary';  // Gray — manual adjustment
     default: return 'secondary';
   }
 }
