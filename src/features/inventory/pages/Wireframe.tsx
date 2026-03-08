@@ -907,7 +907,7 @@ function SKUsManager({
             <div className="sm:col-span-12 text-xs text-slate-500">Editing SKU: <b>{items[editingIndex]?.id}</b></div>
           )}
           <div className="sm:col-span-3">
-            <Label htmlFor="sku-code" className="mb-1.5 block">Code *</Label>
+            <Label htmlFor="sku-code" className="mb-1.5 block">Code <span className="text-red-500">*</span></Label>
             <Input
               id="sku-code"
               className={`w-full h-10 ${errors.id ? 'border-red-500 focus:ring-red-500' : ''} ${editingIndex !== null ? 'bg-slate-100 text-slate-500 cursor-not-allowed' : ''}`}
@@ -916,6 +916,7 @@ function SKUsManager({
               placeholder="SKU-001"
               readOnly={editingIndex !== null}
               title={editingIndex !== null ? 'The SKU code serves as the primary identifier and is linked to inventory layers, cost history, and movement records. Changing it would break these associations and compromise data integrity.' : undefined}
+              aria-required
               aria-invalid={!!errors.id}
               aria-describedby={errors.id ? 'sku-code-error' : undefined}
             />
@@ -952,15 +953,16 @@ function SKUsManager({
             <Input className="w-full" value={form.unit ?? ''} onChange={e => setForm({ ...form, unit: e.target.value })} placeholder="unit" />
           </div>
           <div className="sm:col-span-2">
-            <Label htmlFor="sku-minimum" className="mb-1.5 block">Minimum *</Label>
-            <Input 
+            <Label htmlFor="sku-minimum" className="mb-1.5 block">Minimum <span className="text-red-500">*</span></Label>
+            <Input
               id="sku-minimum"
               className={`w-full h-10 ${errors.min ? 'border-red-500 focus:ring-red-500' : ''}`}
-              type="number" 
+              type="number"
               min={1}
-              value={form.min ?? 0} 
+              value={form.min ?? 0}
               onChange={e => setForm({ ...form, min: Math.max(0, parseInt(e.target.value || '0', 10)) })}
               placeholder="0"
+              aria-required
               aria-invalid={!!errors.min}
               aria-describedby={errors.min ? 'sku-minimum-error' : undefined}
             />
@@ -1176,13 +1178,14 @@ function VendorsManager({
             <div className="md:col-span-2 text-xs text-slate-500">Editing vendor: <b>{items[editingIndex]?.name}</b></div>
           )}
           <div>
-            <Label htmlFor="vendor-name" className="mb-1.5 block">Name *</Label>
-            <Input 
+            <Label htmlFor="vendor-name" className="mb-1.5 block">Name <span className="text-red-500">*</span></Label>
+            <Input
               id="vendor-name"
               className={`w-full h-10 ${errors.name ? 'border-red-500 focus:ring-red-500' : ''}`}
-              value={form.name ?? ''} 
-              onChange={e => setForm({ ...form, name: e.target.value })} 
+              value={form.name ?? ''}
+              onChange={e => setForm({ ...form, name: e.target.value })}
               placeholder="e.g., ABC Metals LLC"
+              aria-required
               aria-invalid={!!errors.name}
               aria-describedby={errors.name ? 'vendor-name-error' : undefined}
             />
@@ -2300,12 +2303,12 @@ export default function InventoryWireframe() {
             <div className="hidden md:flex items-center gap-2">
               <Badge variant="secondary" className="rounded-full">MVP</Badge>
             </div>
-            <div className="flex items-center gap-3">
-              <div className="text-sm text-slate-600">
+            <div className="flex flex-col sm:flex-row items-end sm:items-center gap-1 sm:gap-3">
+              <div className="text-xs sm:text-sm text-slate-600 truncate max-w-[140px] sm:max-w-none">
                 {user?.email}
               </div>
-              <Button 
-                variant="outline" 
+              <Button
+                variant="outline"
                 size="sm"
                 onClick={signOut}
                 className="rounded-xl"

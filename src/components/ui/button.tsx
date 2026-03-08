@@ -6,7 +6,7 @@ type ButtonProps = React.ButtonHTMLAttributes<HTMLButtonElement> & {
 };
 
 export const Button: React.FC<ButtonProps> = ({ variant = 'default', size = 'md', className = '', ...props }) => {
-  const base = 'inline-flex items-center justify-center font-medium rounded-xl';
+  const base = 'inline-flex items-center justify-center font-medium rounded-xl disabled:opacity-50 disabled:cursor-not-allowed';
   const sizes: Record<string, string> = { sm: 'h-8 px-3 text-sm', md: 'h-10 px-4', lg: 'h-12 px-5 text-lg' };
   const variants: Record<string, string> = {
     default: 'bg-slate-900 text-white hover:bg-slate-800',

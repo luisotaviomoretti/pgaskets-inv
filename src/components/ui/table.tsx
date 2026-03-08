@@ -18,7 +18,7 @@ export const TableFooter: React.FC<React.HTMLAttributes<HTMLTableSectionElement>
 );
 
 export const TableRow: React.FC<React.HTMLAttributes<HTMLTableRowElement>> = ({ className = '', ...props }) => (
-  <tr className={`border-b last:border-0 ${className}`} {...props} />
+  <tr className={`border-b last:border-0 hover:bg-slate-50 transition-colors ${className}`} {...props} />
 );
 
 export const TableHead: React.FC<React.ThHTMLAttributes<HTMLTableCellElement>> = ({ className = '', ...props }) => (
