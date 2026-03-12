@@ -20,11 +20,11 @@ import {
 
 /**
  * Valida um valor arbitrário e retorna um SKUId.
- * Lança um erro se o valor não atender ao formato esperado (regex /^[A-Z0-9-]+$/).
+ * Lança um erro se o valor não atender ao formato esperado (string não vazia, até 120 chars).
  */
 export const validateSKUId = (value: unknown): SKUId => {
   if (!isSKUId(value)) {
-    throw new Error('SKUId inválido: esperado string que satisfaça /^[A-Z0-9-]+$/.');
+    throw new Error('SKUId inválido: esperado string não vazia com até 120 caracteres.');
   }
   return value as SKUId;
 };

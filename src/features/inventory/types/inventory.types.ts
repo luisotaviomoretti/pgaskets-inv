@@ -19,10 +19,10 @@ export type VendorId = string & { readonly __brand: 'VendorId' };
 
 /**
  * Valida se uma string atende ao padrão de SKU.
- * Regra: somente letras maiúsculas, dígitos e hífen: /^[A-Z0-9-]+$/
+ * Regra: string não vazia com até 120 caracteres (alinhado com check constraint do DB)
  */
 export const isSKUId = (value: unknown): value is SKUId =>
-  typeof value === 'string' && /^[A-Z0-9-]+$/.test(value);
+  typeof value === 'string' && value.length >= 1 && value.length <= 120;
 
 /**
  * Constrói um `SKUId` a partir de uma string válida.
@@ -30,7 +30,7 @@ export const isSKUId = (value: unknown): value is SKUId =>
  */
 export const toSKUId = (value: string): SKUId => {
   if (!isSKUId(value)) {
-    throw new Error(`SKUId inválido: esperado /^[A-Z0-9-]+$/, recebido "${value}"`);
+    throw new Error(`SKUId inválido: esperado string não vazia com até 120 caracteres, recebido "${value}"`);
   }
   return value as SKUId;
 };

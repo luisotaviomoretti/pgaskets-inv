@@ -4,25 +4,25 @@ import { isSKUId, isVendorId, isLayerId, isMovementId } from '../inventory.types
 /**
  * Testes unitários para type guards de Branded Types.
  * Regras resumidas:
- * - SKUId: regex /^[A-Z0-9-]+$/
+ * - SKUId: string não vazia com até 120 caracteres
  * - VendorId: começa com 'VND-' OU string não vazia
  * - LayerId: string não vazia
  * - MovementId: string não vazia
  */
 
 describe('isSKUId', () => {
-  it('deve aceitar strings válidas (maiúsculas, dígitos, hífen)', () => {
+  it('deve aceitar strings válidas (até 120 chars)', () => {
     expect(isSKUId('SKU-123')).toBe(true);
     expect(isSKUId('ABC')).toBe(true);
     expect(isSKUId('A1-B2-C3')).toBe(true);
+    expect(isSKUId('R25 F-5031 BL 1/4 X 54')).toBe(true); // espaços, barras
+    expect(isSKUId('R45 XI-20 NA  2 LB XLPE 1/2" X 60"')).toBe(true); // aspas
+    expect(isSKUId('sku-123')).toBe(true); // minúsculas OK
   });
 
   it('deve rejeitar strings inválidas', () => {
     expect(isSKUId('')).toBe(false);
-    expect(isSKUId('sku-123')).toBe(false); // minúsculas
-    expect(isSKUId('SKU 123')).toBe(false); // espaço
-    expect(isSKUId('SKU_123')).toBe(false); // underscore
-    expect(isSKUId('SKU#123')).toBe(false); // caractere inválido
+    expect(isSKUId('A'.repeat(121))).toBe(false); // excede 120 chars
     expect(isSKUId(123 as any)).toBe(false);
     expect(isSKUId(null as any)).toBe(false);
     expect(isSKUId(undefined as any)).toBe(false);
