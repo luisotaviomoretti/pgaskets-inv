@@ -544,6 +544,24 @@ function SKUsModal({ children, onClose, onToggleAdd, addOpen, onOpenCategories, 
 const fmtMoney = (n: number) => `$ ${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 const fmtInt = (n: number) => n.toLocaleString('en-US');
 
+/**
+ * Renders a monetary value with 4 decimal places.
+ * The last 2 decimals are displayed in a softer color for visual hierarchy.
+ */
+function FmtMoney4({ value }: { value: number }) {
+  const full = value.toLocaleString('en-US', { minimumFractionDigits: 4, maximumFractionDigits: 4 });
+  // Split into main part (up to 2 decimals) and extra decimals (last 2)
+  const dotIdx = full.lastIndexOf('.');
+  const main = full.slice(0, dotIdx + 3);   // e.g. "93.31"
+  const extra = full.slice(dotIdx + 3);       // e.g. "00"
+  return (
+    <span className="inline-flex items-baseline">
+      <span>$ {main}</span>
+      <span className="text-slate-400">{extra}</span>
+    </span>
+  );
+}
+
 type PeriodOption = 'today' | 'last7' | 'month' | 'quarter' | 'custom';
 type MaterialType = 'RAW' | 'SELLABLE';
 type ProductCategory = 'Adhesives' | 'Boxes' | 'Cork/Rubber' | 'Polyurethane Ester' | 'Polyurethane Ether' | 'Felt' | 'Fibre Foam' | 'Film and Foil';
@@ -591,7 +609,7 @@ function useResizableColumns() {
     unit: 80,
     type: 100,
     onHand: 110,
-    avgCost: 130,
+    avgCost: 150,
     assetValue: 130,
     minimum: 110,
     status: 140
@@ -1763,7 +1781,7 @@ export default function InventoryWireframe() {
         'On Hand': qty,
         'Minimum': min,
         'Status': qty >= min ? 'OK' : 'Below minimum',
-        'Avg. Cost (FIFO)': avgCost ? avgCost.toFixed(2) : 0,
+        'Avg. Cost (FIFO)': avgCost ? avgCost.toFixed(4) : 0,
         'Asset Value': avgCost ? assetValue.toFixed(2) : 0
       };
     });
@@ -2695,7 +2713,7 @@ export default function InventoryWireframe() {
                                 {fmtInt(qty)}
                               </TableCell>
                               <TableCell className="text-right tabular-nums" style={{ width: columnWidths.avgCost, minWidth: 60 }}>
-                                {avg != null ? fmtMoney(avg) : '—'}
+                                {avg != null ? <FmtMoney4 value={avg} /> : '—'}
                               </TableCell>
                               <TableCell className="text-right tabular-nums" style={{ width: columnWidths.assetValue, minWidth: 60 }}>
                                 {avg != null ? fmtMoney(qty * avg) : '—'}

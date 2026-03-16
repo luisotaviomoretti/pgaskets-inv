@@ -260,7 +260,10 @@ export async function createWorkOrder(params: WorkOrderParams): Promise<WorkOrde
       p_client_name: null,
       p_invoice_no: params.reference || null,
       p_notes: params.notes || null,
-      p_materials: allMaterials
+      p_materials: allMaterials,
+      p_work_order_date: params.date instanceof Date
+        ? params.date.toISOString().split('T')[0]
+        : new Date().toISOString().split('T')[0]
     };
 
     console.log('RPC parameters:', rpcParams);

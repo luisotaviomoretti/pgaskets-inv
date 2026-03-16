@@ -164,6 +164,7 @@ export default function WorkOrder({ skus, layersBySku, onUpdateLayers, onUpdateS
   const [woProducedQty, setWoProducedQty] = useState<number>(0);
   const [woClient, setWoClient] = useState('');
   const [woInvoice, setWoInvoice] = useState('');
+  const [woDate, setWoDate] = useState(() => new Date().toISOString().split('T')[0]);
   const [layersModalSku, setLayersModalSku] = useState<string | null>(null);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [confirmOpen, setConfirmOpen] = useState(false);
@@ -571,7 +572,7 @@ export default function WorkOrder({ skus, layersBySku, onUpdateLayers, onUpdateS
       const outputUnit = unitCandidates[0] || '';
       const payload = {
         code: woRef,
-        datetime: new Date().toISOString(),
+        datetime: new Date(woDate + 'T12:00:00').toISOString(),
         outputName: woOutputName.trim(),
         outputUnit,
         mode: 'MANUAL',
@@ -594,7 +595,7 @@ export default function WorkOrder({ skus, layersBySku, onUpdateLayers, onUpdateS
         outputQuantity: producedQty,
         rawMaterials: rawMaterials.filter(r => r.skuId && r.qty > 0).map(r => ({ skuId: r.skuId, quantity: r.qty })),
         wasteLines: wasteLines.filter(w => w.wasteQty > 0).map(w => ({ skuId: w.skuId, quantity: w.wasteQty })),
-        date: new Date(),
+        date: new Date(woDate + 'T12:00:00'),
         reference: woRef,
         notes: JSON.stringify({ client: woClient, invoice: woInvoice })
       });
@@ -661,6 +662,7 @@ Cost Breakdown:
       setWoProducedQty(0);
       setWoClient('');
       setWoInvoice('');
+      setWoDate(new Date().toISOString().split('T')[0]);
       setValidationIssues([]);
       setErrors({});
     } catch (err: any) {
@@ -945,9 +947,19 @@ Cost Breakdown:
                   {!hasMixedUnits && errors.producedQty && <ErrorMessage id="producedQty-error" message={errors.producedQty} />}
                 </div>
                 {/* Row 2 */}
-                <div className="md:col-span-12 lg:col-span-6">
+                <div className="md:col-span-12 lg:col-span-4">
+                  <Label className="mb-1.5 block">Date *</Label>
+                  <Input
+                    id="woDate"
+                    type="date"
+                    value={woDate}
+                    onChange={(e) => setWoDate(e.target.value)}
+                    className="h-10 w-full"
+                  />
+                </div>
+                <div className="md:col-span-12 lg:col-span-4">
                   <Label className="mb-1.5 block">Client (free text)</Label>
-                  <Input 
+                  <Input
                     id="woClient"
                     value={woClient}
                     onChange={(e) => setWoClient(e.target.value)}
@@ -955,9 +967,9 @@ Cost Breakdown:
                     className="h-10 w-full"
                   />
                 </div>
-                <div className="md:col-span-12 lg:col-span-6">
+                <div className="md:col-span-12 lg:col-span-4">
                   <Label className="mb-1.5 block">Invoice number (free text)</Label>
-                  <Input 
+                  <Input
                     id="woInvoice"
                     value={woInvoice}
                     onChange={(e) => setWoInvoice(e.target.value)}
@@ -1191,6 +1203,7 @@ Cost Breakdown:
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-sm text-slate-700">
                   <div><span className="text-slate-500">Output name:</span> <b>{woOutputName || '-'}</b></div>
                   <div><span className="text-slate-500">Produced qty:</span> <b>{woProducedQty}</b></div>
+                  <div><span className="text-slate-500">Date:</span> <b>{woDate}</b></div>
                   {woClient && (<div><span className="text-slate-500">Client:</span> <b>{woClient}</b></div>)}
                   {woInvoice && (<div><span className="text-slate-500">Invoice:</span> <b>{woInvoice}</b></div>)}
                 </div>
