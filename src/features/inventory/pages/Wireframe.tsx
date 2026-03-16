@@ -2318,9 +2318,6 @@ export default function InventoryWireframe() {
             </div>
           </div>
           <div className="flex items-center gap-3">
-            <div className="hidden md:flex items-center gap-2">
-              <Badge variant="secondary" className="rounded-full">MVP</Badge>
-            </div>
             <div className="flex flex-col sm:flex-row items-end sm:items-center gap-1 sm:gap-3">
               <div className="text-xs sm:text-sm text-slate-600 truncate max-w-[140px] sm:max-w-none">
                 {user?.email}
