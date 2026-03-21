@@ -1272,7 +1272,7 @@ export default function InventoryWireframe() {
   const { user, signOut } = useAuth();
   const { columnWidths, handleMouseDown, resetWidths } = useResizableColumns();
   const [tab, setTab] = useState('dashboard');
-  const [period, setPeriod] = useState<PeriodOption>('last7');
+  const [period, setPeriod] = useState<PeriodOption>('quarter');
   const [customStart, setCustomStart] = useState<string>('');
   const [customEnd, setCustomEnd] = useState<string>('');
   const [vendors, setVendors] = useState<Vendor[]>([]);

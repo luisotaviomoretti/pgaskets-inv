@@ -409,7 +409,7 @@ export async function getWorkOrders(filters?: {
 }
 
 /**
- * Get work order details with lines
+ * Get work order details with associated movements (RAW/WASTE/PRODUCE)
  */
 export async function getWorkOrderById(id: string) {
   try {
@@ -429,24 +429,46 @@ export async function getWorkOrderById(id: string) {
       handleSupabaseError(woError);
     }
 
-    const { data: lines, error: linesError } = await supabase
-      .from('work_order_lines')
+    // Derive WO lines from movements linked to this work order
+    const { data: movements, error: movError } = await supabase
+      .from('movements')
       .select(`
-        *,
-        skus (id, description, unit),
-        movements (id, type, datetime)
+        id,
+        type,
+        sku_id,
+        quantity,
+        unit_cost,
+        total_value,
+        datetime,
+        notes,
+        skus (id, description, unit)
       `)
       .eq('work_order_id', id)
+      .is('deleted_at', null)
       .order('type')
       .order('created_at');
 
-    if (linesError) {
-      handleSupabaseError(linesError);
+    if (movError) {
+      handleSupabaseError(movError);
     }
+
+    // Map movements to a lines-like shape for API compatibility
+    const lines = (movements || []).map((m: any) => ({
+      id: m.id,
+      work_order_id: id,
+      type: m.type === 'PRODUCE' ? 'OUTPUT' : m.type === 'WASTE' ? 'WASTE' : 'RAW',
+      sku_id: m.sku_id,
+      quantity: Math.abs(m.quantity),
+      unit_cost: m.unit_cost,
+      total_cost: Math.abs(m.total_value),
+      movement_id: m.id,
+      created_at: m.datetime,
+      skus: m.skus,
+    }));
 
     return {
       workOrder,
-      lines: lines || [],
+      lines,
     };
   } catch (error) {
     console.error('Error fetching work order details:', error);

@@ -614,7 +614,7 @@ export default function WorkOrder({ skus, layersBySku, onUpdateLayers, onUpdateS
         result
       });
 
-      // Enhanced success message with cost breakdown
+      // Enhanced success message with cost breakdown + date tip
       const netCost = result.netProduceCost || (result.totalRawCost - result.totalWasteCost);
       const costBreakdown = `
 Cost Breakdown:
@@ -623,7 +623,17 @@ Cost Breakdown:
   NET PRODUCE: $${netCost?.toFixed(2) || '0.00'}
   Unit Cost: $${result.outputUnitCost?.toFixed(2) || '0.00'} / ${producedQty} units`;
 
-      alert(`Work Order ${result.workOrderId} finalized successfully!\n${producedQty} units of "${woOutputName.trim()}" produced.\n${costBreakdown}`);
+      // Check if the WO date falls outside the current quarter — warn user it may not appear
+      const today = new Date();
+      const qStartMonth = Math.floor(today.getMonth() / 3) * 3;
+      const quarterStart = new Date(today.getFullYear(), qStartMonth, 1);
+      const woDateObj = new Date(woDate + 'T12:00:00');
+      const isOutsideQuarter = woDateObj < quarterStart || woDateObj > today;
+      const dateTip = isOutsideQuarter
+        ? `\n\nNote: The production date (${woDate}) is outside the current quarter. Go to Movements and select "Custom range" to see it.`
+        : '';
+
+      alert(`Work Order ${result.workOrderId} finalized successfully!\n${producedQty} units of "${woOutputName.trim()}" produced.\n${costBreakdown}${dateTip}`);
 
       // Emit work order completion for instant UI updates
       emitWorkOrderCompleted({

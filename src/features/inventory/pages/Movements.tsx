@@ -111,7 +111,7 @@ export default function Movements({ movements = [], onDeleteMovement, onExportEx
   const [skuFilter, setSkuFilter] = useState('');
   const [woFilter, setWoFilter] = useState('');
   const [typeFilter, setTypeFilter] = useState('');
-  const [period, setPeriod] = useState<PeriodOption>('last7');
+  const [period, setPeriod] = useState<PeriodOption>('quarter');
   const [customStart, setCustomStart] = useState<string>('');
   const [hoveredReceiving, setHoveredReceiving] = useState<string | null>(null);
   const [tooltipPosition, setTooltipPosition] = useState({ x: 0, y: 0 });
@@ -338,6 +338,33 @@ export default function Movements({ movements = [], onDeleteMovement, onExportEx
 
     return { newMovements, alreadyExported };
   }, [filteredMovements, getExportedMovements]);
+
+  // Detect movements hidden by the period filter so we can show a helpful banner
+  const hiddenByPeriod = useMemo(() => {
+    const totalFromBackend = (movements || []).length;
+    const visibleCount = filteredMovements.length;
+    const hiddenCount = totalFromBackend - visibleCount;
+
+    // Only count movements hidden specifically by the date range (not by text/type filters)
+    let hiddenByDateOnly = 0;
+    (movements || []).forEach((movement) => {
+      if (movement.type === MovementType.DAMAGE) return; // DAMAGE excluded anyway
+
+      // Check if it passes text/type filters but fails the date filter
+      if (deferredSku && !movement.skuOrName.toLowerCase().includes(deferredSku.toLowerCase())) return;
+      if (deferredWo && !movement.ref.toLowerCase().includes(deferredWo.toLowerCase())) return;
+      if (typeFilter && movement.type !== typeFilter) return;
+
+      const movementTime = movement.datetime instanceof Date
+        ? movement.datetime.getTime()
+        : new Date(movement.datetime).getTime();
+      if (movementTime < rangeStart || movementTime > rangeEnd) {
+        hiddenByDateOnly++;
+      }
+    });
+
+    return { hiddenCount, hiddenByDateOnly };
+  }, [movements, filteredMovements, deferredSku, deferredWo, typeFilter, rangeStart, rangeEnd]);
 
   // Group receiving movements for tooltips (including DAMAGE for calculation)
   const receivingTooltips = useMemo(() => {
@@ -576,6 +603,34 @@ export default function Movements({ movements = [], onDeleteMovement, onExportEx
           </div>
         </CardHeader>
         <CardContent className="space-y-3">
+          {/* Banner: warn user when movements are hidden outside the selected period */}
+          {hiddenByPeriod.hiddenByDateOnly > 0 && (
+            <div className="flex items-start gap-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+              <span className="mt-0.5 shrink-0 text-lg leading-none" aria-hidden="true">&#9888;</span>
+              <div>
+                <p className="font-semibold">
+                  {hiddenByPeriod.hiddenByDateOnly} movement{hiddenByPeriod.hiddenByDateOnly > 1 ? 's are' : ' is'} outside the "{formatPeriodDisplay()}" range
+                </p>
+                <p className="mt-1 text-amber-800">
+                  Work Orders use the <strong>production date</strong> you entered (not today's date).
+                  If you entered a past date, those movements won't appear in the current period.
+                </p>
+                {period !== 'quarter' ? (
+                  <button
+                    type="button"
+                    className="mt-2 inline-flex items-center gap-1 rounded-md bg-amber-200 px-3 py-1 text-xs font-medium text-amber-900 hover:bg-amber-300 transition-colors"
+                    onClick={() => setPeriod('quarter')}
+                  >
+                    Switch to "Current quarter" to see all recent movements
+                  </button>
+                ) : (
+                  <p className="mt-1 text-amber-700 text-xs">
+                    Try "Custom range" above to pick a wider date window.
+                  </p>
+                )}
+              </div>
+            </div>
+          )}
           {/* Export buttons with count */}
           <div className="flex items-center justify-between">
             <div className="text-sm text-slate-600">
