@@ -1781,8 +1781,8 @@ export default function InventoryWireframe() {
         'On Hand': qty,
         'Minimum': min,
         'Status': qty >= min ? 'OK' : 'Below minimum',
-        'Avg. Cost (FIFO)': avgCost ? avgCost.toFixed(4) : 0,
-        'Asset Value': avgCost ? assetValue.toFixed(2) : 0
+        'Avg. Cost (FIFO)': avgCost ? Number(avgCost.toFixed(4)) : 0,
+        'Asset Value': avgCost ? Number(assetValue.toFixed(2)) : 0
       };
     });
 
@@ -1841,9 +1841,9 @@ export default function InventoryWireframe() {
         ? (movement.qty > 0 ? movement.qty : movement.qty) 
         : Math.abs(movement.qty || 0);
       
-      const value = movement.type === MovementTypeEnum.RECEIVE 
-        ? (movement.value ? movement.value.toFixed(2) : 0)
-        : (movement.value ? Math.abs(movement.value).toFixed(2) : 0);
+      const value = movement.type === MovementTypeEnum.RECEIVE
+        ? (movement.value ? Number(movement.value.toFixed(2)) : 0)
+        : (movement.value ? Number(Math.abs(movement.value).toFixed(2)) : 0);
       
       return {
         'Date': datetime.toLocaleDateString('en-US'),
@@ -2029,7 +2029,7 @@ export default function InventoryWireframe() {
             'Journal No.': journalNo,
             'Journal Date': journalDate,
             'Account Name': inventoryAccount,
-            'Debits': value.toFixed(2),
+            'Debits': Number(value.toFixed(2)),
             'Credits': '',
             'Reference': `${movement.ref} - ${movement.skuOrName}`,
             'Movement ID': movement.movementId
@@ -2039,7 +2039,7 @@ export default function InventoryWireframe() {
             'Journal Date': journalDate,
             'Account Name': 'Accounts Payable',
             'Debits': '',
-            'Credits': value.toFixed(2),
+            'Credits': Number(value.toFixed(2)),
             'Reference': `${movement.ref} - ${movement.skuOrName}`,
             'Movement ID': movement.movementId
           });
@@ -2051,7 +2051,7 @@ export default function InventoryWireframe() {
             'Journal No.': journalNo,
             'Journal Date': journalDate,
             'Account Name': 'Cost of Goods Sold (COGS)',
-            'Debits': value.toFixed(2),
+            'Debits': Number(value.toFixed(2)),
             'Credits': '',
             'Reference': `${movement.ref} - ${movement.skuOrName}`,
             'Movement ID': movement.movementId
@@ -2061,7 +2061,7 @@ export default function InventoryWireframe() {
             'Journal Date': journalDate,
             'Account Name': inventoryAccount,
             'Debits': '',
-            'Credits': value.toFixed(2),
+            'Credits': Number(value.toFixed(2)),
             'Reference': `${movement.ref} - ${movement.skuOrName}`,
             'Movement ID': movement.movementId
           });
@@ -2073,7 +2073,7 @@ export default function InventoryWireframe() {
             'Journal No.': journalNo,
             'Journal Date': journalDate,
             'Account Name': 'Shrinkage Expense',
-            'Debits': value.toFixed(2),
+            'Debits': Number(value.toFixed(2)),
             'Credits': '',
             'Reference': `${movement.ref} - ${movement.skuOrName}`,
             'Movement ID': movement.movementId
@@ -2083,7 +2083,7 @@ export default function InventoryWireframe() {
             'Journal Date': journalDate,
             'Account Name': inventoryAccount,
             'Debits': '',
-            'Credits': value.toFixed(2),
+            'Credits': Number(value.toFixed(2)),
             'Reference': `${movement.ref} - ${movement.skuOrName}`,
             'Movement ID': movement.movementId
           });
@@ -2101,7 +2101,7 @@ export default function InventoryWireframe() {
               'Journal No.': journalNo,
               'Journal Date': journalDate,
               'Account Name': inventoryAccount,
-              'Debits': value.toFixed(2),
+              'Debits': Number(value.toFixed(2)),
               'Credits': '',
               'Reference': `${movement.ref} - ${movement.skuOrName} (Inventory Adjustment +)`,
               'Movement ID': movement.movementId
@@ -2111,7 +2111,7 @@ export default function InventoryWireframe() {
               'Journal Date': journalDate,
               'Account Name': 'Accounts Payable',
               'Debits': '',
-              'Credits': value.toFixed(2),
+              'Credits': Number(value.toFixed(2)),
               'Reference': `${movement.ref} - ${movement.skuOrName} (Inventory Adjustment +)`,
               'Movement ID': movement.movementId
             });
@@ -2121,7 +2121,7 @@ export default function InventoryWireframe() {
               'Journal No.': journalNo,
               'Journal Date': journalDate,
               'Account Name': 'Accounts Payable',
-              'Debits': value.toFixed(2),
+              'Debits': Number(value.toFixed(2)),
               'Credits': '',
               'Reference': `${movement.ref} - ${movement.skuOrName} (Inventory Adjustment -)`,
               'Movement ID': movement.movementId
@@ -2131,7 +2131,7 @@ export default function InventoryWireframe() {
               'Journal Date': journalDate,
               'Account Name': inventoryAccount,
               'Debits': '',
-              'Credits': value.toFixed(2),
+              'Credits': Number(value.toFixed(2)),
               'Reference': `${movement.ref} - ${movement.skuOrName} (Inventory Adjustment -)`,
               'Movement ID': movement.movementId
             });
