@@ -2805,14 +2805,19 @@ export default function InventoryWireframe() {
                 {isLoadingMovements ? 'Refreshing...' : 'Refresh'}
               </Button>
             </div>
-              <Movements 
-              movements={movementLog} 
+              <Movements
+              movements={movementLog}
               onExportExcel={exportMovementsToExcel}
               onExportJournal={exportJournalToExcel}
               getExportedMovements={getExportedMovements}
               clearExportHistory={clearExportHistory}
               syncToCloud={syncToCloud}
               onRefreshMovements={loadMovements}
+              onPeriodChange={(p, cs, ce) => {
+                setPeriod(p);
+                setCustomStart(cs || '');
+                setCustomEnd(ce || '');
+              }}
               onDeleteMovement={async (movementId) => {
                 console.log('🚀 onDeleteMovement called with:', movementId);
                 console.log('🚀 deleteBackendMovement function:', typeof deleteBackendMovement);

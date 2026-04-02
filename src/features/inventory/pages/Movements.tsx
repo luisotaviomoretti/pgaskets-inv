@@ -24,6 +24,7 @@ interface MovementsProps {
   clearExportHistory?: () => Promise<void>;
   syncToCloud?: () => Promise<void>;
   onRefreshMovements?: () => void; // New prop for triggering movements refresh
+  onPeriodChange?: (period: PeriodOption, customStart?: string, customEnd?: string) => void;
 }
 
 // Movement type badge colors — distinct colors for quick scanning
@@ -75,7 +76,7 @@ function SimpleDeleteButton({
 // (removed misplaced top-level useEffect; logic moved inside component)
 
 // Period types matching Dashboard pattern
-type PeriodOption = 'today' | 'last7' | 'month' | 'quarter' | 'custom';
+export type PeriodOption = 'today' | 'last7' | 'month' | 'quarter' | 'custom';
 
 // Receiving tooltip interface
 interface ReceivingTooltip {
@@ -107,7 +108,7 @@ function getRange(period: PeriodOption, customStart?: string, customEnd?: string
   return [new Date(now.getFullYear(), qStartMonth, 1).getTime(), now.getTime()] as const;
 }
 
-export default function Movements({ movements = [], onDeleteMovement, onExportExcel, onExportJournal, getExportedMovements, clearExportHistory, syncToCloud, onRefreshMovements }: MovementsProps) {
+export default function Movements({ movements = [], onDeleteMovement, onExportExcel, onExportJournal, getExportedMovements, clearExportHistory, syncToCloud, onRefreshMovements, onPeriodChange }: MovementsProps) {
   const [skuFilter, setSkuFilter] = useState('');
   const [woFilter, setWoFilter] = useState('');
   const [typeFilter, setTypeFilter] = useState('');
@@ -134,6 +135,11 @@ export default function Movements({ movements = [], onDeleteMovement, onExportEx
   // Pagination state
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
+
+  // Notify parent when period changes so it can re-fetch movements for the correct range
+  useEffect(() => {
+    onPeriodChange?.(period, customStart, customEnd);
+  }, [period, customStart, customEnd, onPeriodChange]);
 
   // Debounced filters (lower-priority updates)
   const deferredSku = useDeferredValue(skuFilter);
