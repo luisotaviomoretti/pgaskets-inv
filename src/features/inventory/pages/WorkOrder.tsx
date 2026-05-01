@@ -13,6 +13,8 @@ import { processWorkOrder, getFIFOLayers } from '@/features/inventory/services/i
 import { useWorkOrderEvents } from '@/features/inventory/utils/workOrderEvents';
 import { getFeatureFlag } from '@/lib/featureFlags';
 import { SkuPickerModal } from '@/features/inventory/components/SkuPicker';
+import { telemetry } from '@/features/inventory/services/telemetry';
+import { describeRpcError, InventoryErrorCode } from '@/features/inventory/types/errors';
 
 // Types for Work Order
 type SKU = { id: string; description?: string; type: 'RAW' | 'SELLABLE'; productCategory: string; unit?: string; onHand?: number };
@@ -174,7 +176,7 @@ export default function WorkOrder({ skus, layersBySku, onUpdateLayers, onUpdateS
   const [woSkuPickerOpen, setWoSkuPickerOpen] = useState(false);
   const [woSkuPickerLineId, setWoSkuPickerLineId] = useState<string | null>(null);
 
-  // Stable default WO reference id (idempotent across retries in same session)
+  // Human-readable WO reference (regenerated on every form reset / submission)
   const defaultWOIdRef = useRef<string>('');
   const getNowYMDHM = () => {
     const d = new Date();
@@ -186,10 +188,24 @@ export default function WorkOrder({ skus, layersBySku, onUpdateLayers, onUpdateS
     const MM = pad(d.getMinutes());
     return `${yyyy}${mm}${dd}${HH}${MM}`;
   };
-  if (!defaultWOIdRef.current) {
+  const generateNewDefaultWoId = useCallback(() => {
     const shortRand = Math.random().toString(36).slice(2, 6).toUpperCase();
     defaultWOIdRef.current = `WO-${getNowYMDHM()}-${shortRand}`;
+  }, []);
+  if (!defaultWOIdRef.current) {
+    generateNewDefaultWoId();
   }
+
+  // Idempotency: a fresh UUID per submission. Same UUID is reused across
+  // retries of the same submission (so the server dedups via migration 044);
+  // a NEW UUID is generated for every NEW submission (after success or
+  // form reset).
+  const currentSubmissionIdRef = useRef<string | null>(null);
+
+  // Single-flight guard: set synchronously before any async work begins so
+  // a double-click cannot race past the visible `isSubmitting` state. The
+  // visible state is still used for the spinner / button-disabled UI.
+  const submittingRef = useRef<boolean>(false);
 
   // Strategy 1: Preload layers automatically when new SKUs are selected
   useEffect(() => {
@@ -502,6 +518,11 @@ export default function WorkOrder({ skus, layersBySku, onUpdateLayers, onUpdateS
   }, [woOutputName, woProducedQty, rawMaterials, totalRawQty, totalWasteQty, multiSkuPlans, hasMixedUnits]);
 
   const finalizeWO = async () => {
+    // Single-flight guard. Set synchronously *before* any awaits so a
+    // double-click cannot race past it.
+    if (submittingRef.current) return;
+    submittingRef.current = true;
+
     // Clear previous validation issues
     setValidationIssues([]);
     const newErrors: Record<string, string> = {};
@@ -547,6 +568,7 @@ export default function WorkOrder({ skus, layersBySku, onUpdateLayers, onUpdateS
           document.getElementById('wo-validation-banner')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
         }, 50);
       }
+      submittingRef.current = false;
       return;
     }
 
@@ -584,20 +606,76 @@ export default function WorkOrder({ skus, layersBySku, onUpdateLayers, onUpdateS
     } catch (err: any) {
       const message = err?.errors?.[0]?.message || 'Invalid Work Order data. Please review the form.';
       setErrors({ _form: message });
+      submittingRef.current = false;
       return;
     }
 
+    // Refresh-then-validate: re-fetch FIFO layers for every active SKU and
+    // re-check feasibility against the freshest data. This narrows the race
+    // window before the server-side FOR UPDATE locks engage.
+    try {
+      const skuIds = Array.from(new Set(activeRaw.map(r => r.skuId)));
+      const freshLayers = await Promise.all(skuIds.map(async (skuId) => {
+        const layers = await getFIFOLayers(skuId);
+        const mapped = (layers || []).map((l: any) => {
+          const d = l.date instanceof Date ? l.date : new Date(l.date);
+          const dateStr = isNaN(d.getTime()) ? String(l.date) : d.toISOString().split('T')[0];
+          return { id: l.id, date: dateStr, remaining: l.remaining, cost: l.cost };
+        });
+        if (onUpdateLayers) onUpdateLayers(skuId, mapped);
+        return { skuId, total: mapped.reduce((s: number, l: any) => s + (l.remaining || 0), 0) };
+      }));
+      const requiredBySku = new Map<string, number>();
+      for (const r of activeRaw) {
+        requiredBySku.set(r.skuId, (requiredBySku.get(r.skuId) || 0) + r.qty);
+      }
+      const stillInsufficient = freshLayers
+        .filter(({ skuId, total }) => total < (requiredBySku.get(skuId) || 0))
+        .map(({ skuId, total }) => ({
+          skuId,
+          required: requiredBySku.get(skuId) || 0,
+          available: total,
+          hasZeroStock: total === 0,
+        }));
+      if (stillInsufficient.length > 0) {
+        setValidationIssues(stillInsufficient);
+        setTimeout(() => {
+          document.getElementById('wo-validation-banner')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }, 50);
+        submittingRef.current = false;
+        return;
+      }
+    } catch (e) {
+      // If the fresh fetch itself fails, fall through and let the server be
+      // the source of truth — its FOR UPDATE locks will still produce a
+      // correct INSUFFICIENT_STOCK error if needed.
+      console.warn('Refresh-then-validate failed; relying on server-side check:', e);
+    }
+
+    // Generate a fresh idempotency UUID for this submission. Reused only
+    // within the call below if it fails and we need to retry — currently
+    // a single attempt because the service's rpcWithRetry already covers
+    // serialization/deadlock retries internally.
+    if (!currentSubmissionIdRef.current) {
+      currentSubmissionIdRef.current = (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function')
+        ? crypto.randomUUID()
+        : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    }
+    const clientRequestId = currentSubmissionIdRef.current;
+
     setIsSubmitting(true);
+    telemetry.event('wo.ui.submit_clicked', { reference: woRef, clientRequestId });
     try {
       // Backend persistence via adapter
-      const result = await processWorkOrder({
+      const result: any = await processWorkOrder({
         outputName: woOutputName.trim(),
         outputQuantity: producedQty,
         rawMaterials: rawMaterials.filter(r => r.skuId && r.qty > 0).map(r => ({ skuId: r.skuId, quantity: r.qty })),
         wasteLines: wasteLines.filter(w => w.wasteQty > 0).map(w => ({ skuId: w.skuId, quantity: w.wasteQty })),
         date: new Date(woDate + 'T12:00:00'),
         reference: woRef,
-        notes: JSON.stringify({ client: woClient, invoice: woInvoice })
+        notes: JSON.stringify({ client: woClient, invoice: woInvoice }),
+        clientRequestId,
       });
 
       // Detailed logging for verification
@@ -633,7 +711,10 @@ Cost Breakdown:
         ? `\n\nNote: The production date (${woDate}) is outside the current quarter. Go to Movements and select "Custom range" to see it.`
         : '';
 
-      alert(`Work Order ${result.workOrderId} finalized successfully!\n${producedQty} units of "${woOutputName.trim()}" produced.\n${costBreakdown}${dateTip}`);
+      const dedupHeader = result.wasDuplicate
+        ? 'This submission was already processed — showing the previously-saved Work Order.\n\n'
+        : '';
+      alert(`${dedupHeader}Work Order ${result.workOrderId} finalized successfully!\n${producedQty} units of "${woOutputName.trim()}" produced.\n${costBreakdown}${dateTip}`);
 
       // Emit work order completion for instant UI updates
       emitWorkOrderCompleted({
@@ -675,27 +756,27 @@ Cost Breakdown:
       setWoDate(new Date().toISOString().split('T')[0]);
       setValidationIssues([]);
       setErrors({});
+
+      // The submission lifecycle is over — generate a fresh nonce and a new
+      // human-readable WO reference so the next submission cannot be
+      // mistakenly deduped against this one.
+      currentSubmissionIdRef.current = null;
+      generateNewDefaultWoId();
     } catch (err: any) {
-      // Classify and present meaningful error messages
-      const rawMsg = err?.message || '';
-      let userMessage: string;
-
-      if (rawMsg.includes('Insufficient stock') || rawMsg.includes('Could not consume full quantity')) {
-        // Race condition: inventory changed between validation and execution
-        userMessage = 'Inventory levels have changed since this form was loaded. Please refresh the page and review available stock before resubmitting.';
-      } else if (rawMsg.includes('fetch') || rawMsg.includes('network') || rawMsg.includes('Failed to fetch') || rawMsg.includes('timeout') || rawMsg.includes('ERR_NETWORK')) {
-        userMessage = 'A connection issue occurred while processing this Work Order. Please check the Work Order list to confirm whether it was created before attempting again.';
-      } else if (rawMsg.includes('23514') || rawMsg.includes('constraint') || rawMsg.includes('Integrity violation')) {
-        userMessage = 'An unexpected error occurred while processing this Work Order. Please contact your system administrator if the issue persists.\n\nTechnical detail: ' + rawMsg;
-      } else if (rawMsg) {
-        userMessage = rawMsg;
-      } else {
-        userMessage = 'Failed to finalize Work Order. Please try again.';
-      }
-
-      alert(userMessage);
+      const { code, userMessage } = describeRpcError(err);
+      // For race-style insufficient stock surfacing during execution, lead
+      // with a clearer instruction since the user just saw the form pass
+      // local validation moments ago.
+      const finalMessage = code === InventoryErrorCode.INSUFFICIENT_STOCK
+        ? 'Inventory levels have changed since this form was loaded. Please refresh the page and review available stock before resubmitting.\n\n' + userMessage
+        : userMessage;
+      alert(finalMessage);
+      // Keep the same currentSubmissionIdRef so the user can retry without
+      // double-consuming. The server will dedup if the failed call actually
+      // committed (network-reply-lost case).
     } finally {
       setIsSubmitting(false);
+      submittingRef.current = false;
     }
   };
 

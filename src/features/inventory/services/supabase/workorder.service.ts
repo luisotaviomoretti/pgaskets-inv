@@ -6,6 +6,8 @@
 import { supabase, handleSupabaseError } from '@/lib/supabase';
 import type { Database } from '@/types/supabase';
 import { calculateFIFOPlan, type FIFOPlanResult } from './fifo.service';
+import { telemetry } from '@/features/inventory/services/telemetry';
+import { parseRpcError } from '@/features/inventory/types/errors';
 // Temporarily commented out to avoid import conflicts
 // import { 
 //   validateWorkOrder, 
@@ -34,6 +36,13 @@ export interface WorkOrderParams {
   date: Date;
   reference?: string;
   notes?: string;
+  /**
+   * Client-generated UUID v4 used for atomic dedup (migration 044).
+   * The same submission must reuse this UUID across retries; a NEW
+   * submission must generate a fresh UUID. The frontend is responsible
+   * for that lifecycle.
+   */
+  clientRequestId?: string;
 }
 
 export interface MultiSKUFIFOPlan {
@@ -49,6 +58,8 @@ export interface WorkOrderResult {
   outputUnitCost: number;
   rawPlans: MultiSKUFIFOPlan[];
   wastePlans: MultiSKUFIFOPlan[];
+  /** True when the server returned a previously-persisted WO (idempotency hit). */
+  wasDuplicate?: boolean;
   // validation?: WorkOrderValidationResult; // Temporarily disabled
 }
 
@@ -95,26 +106,28 @@ async function rpcWithRetry<T>(exec: () => Promise<{ data: T | null; error: any 
   throw lastError || new Error('RPC failed after retries');
 }
 
-async function findExistingWorkOrderByReference(reference?: string, outputName?: string, outputQty?: number) {
+/**
+ * Look up an existing WO by client_request_id. Used as the post-failure fallback
+ * for the network-reply-lost case: the RPC may have committed before the network
+ * dropped, so on retry exhaustion we check whether the row already exists by
+ * its idempotency nonce. The dedup itself is now done server-side (migration
+ * 044), so this function intentionally does NOT fall back to (invoice_no,
+ * name, qty) — that key collided across legitimate distinct submissions.
+ */
+async function findWorkOrderByClientRequestId(clientRequestId?: string) {
   try {
-    if (!reference) return null;
-    let query = supabase
+    if (!clientRequestId) return null;
+    const { data, error } = await supabase
       .from('work_orders')
       .select('*')
-      .eq('invoice_no', reference)
-      .order('created_at', { ascending: false })
+      .eq('client_request_id', clientRequestId)
       .limit(1);
-
-    if (outputName) query = query.eq('output_name', outputName);
-    if (typeof outputQty === 'number' && !Number.isNaN(outputQty)) query = query.eq('output_quantity', outputQty);
-
-    const { data, error } = await query;
     if (error) handleSupabaseError(error);
     if (!data || data.length === 0) return null;
     return data[0];
   } catch (e) {
     // eslint-disable-next-line no-console
-    console.warn('[findExistingWorkOrderByReference] lookup failed:', e);
+    console.warn('[findWorkOrderByClientRequestId] lookup failed:', e);
     return null;
   }
 }
@@ -221,37 +234,15 @@ export async function createWorkOrder(params: WorkOrderParams): Promise<WorkOrde
     // Combine all materials for consumption
     const allMaterials = [...materials, ...wasteMaterials];
 
-    console.log('Creating work order with transactional RPC:', {
-      outputName: params.outputName,
+    telemetry.event('wo.submit.started', {
       outputQuantity: params.outputQuantity,
-      materials: allMaterials
+      materialCount: allMaterials.length,
+      hasClientRequestId: !!params.clientRequestId,
     });
 
-    // Idempotency soft-check: if a work order with this external reference already exists, return it
-    const existingWO = await findExistingWorkOrderByReference(params.reference, params.outputName, params.outputQuantity);
-    if (existingWO) {
-      // Compute plans to keep return shape consistent with UI expectations
-      const fifoPlans = await calculateWorkOrderFIFOPlans(params.rawMaterials, params.wasteLines);
-      return {
-        workOrderId: existingWO.id,
-        totalRawCost: fifoPlans.totalRawCost,
-        totalWasteCost: fifoPlans.totalWasteCost,
-        outputUnitCost: fifoPlans.totalRawCost > 0 && params.outputQuantity > 0 ? (fifoPlans.totalRawCost - fifoPlans.totalWasteCost) / params.outputQuantity : 0,
-        rawPlans: fifoPlans.rawPlans,
-        wastePlans: fifoPlans.wastePlans,
-        // extra details to maintain compatibility
-        netProduceCost: (fifoPlans.totalRawCost - fifoPlans.totalWasteCost),
-        details: {
-          rawCost: fifoPlans.totalRawCost,
-          wasteCost: fifoPlans.totalWasteCost,
-          netCost: (fifoPlans.totalRawCost - fifoPlans.totalWasteCost),
-          unitCost: fifoPlans.totalRawCost > 0 && params.outputQuantity > 0 ? (fifoPlans.totalRawCost - fifoPlans.totalWasteCost) / params.outputQuantity : 0,
-          consumptions: []
-        }
-      } as any;
-    }
-
-    // Call transactional RPC (with retry for serialization/deadlock/lock errors)
+    // Call transactional RPC (with retry for serialization/deadlock/lock errors).
+    // The RPC itself is now atomically idempotent (migration 044) — same
+    // client_request_id => returns existing WO with was_duplicate=true.
     const rpcParams = {
       p_output_name: params.outputName,
       p_output_quantity: params.outputQuantity,
@@ -263,36 +254,42 @@ export async function createWorkOrder(params: WorkOrderParams): Promise<WorkOrde
       p_materials: allMaterials,
       p_work_order_date: params.date instanceof Date
         ? params.date.toISOString().split('T')[0]
-        : new Date().toISOString().split('T')[0]
+        : new Date().toISOString().split('T')[0],
+      p_client_request_id: params.clientRequestId || null,
     };
-
-    console.log('RPC parameters:', rpcParams);
 
     let result: any;
     try {
       result = await rpcWithRetry<any>(() => supabase.rpc('create_work_order_transaction', rpcParams), 3, 100);
     } catch (err) {
-      console.error('Error creating work order via RPC (after retries):', err);
-      // As a last attempt for idempotency, check again by reference (in case first attempt actually succeeded but reply failed)
-      const fallbackWO = await findExistingWorkOrderByReference(params.reference, params.outputName, params.outputQuantity);
-      if (fallbackWO) {
-        const fifoPlans = await calculateWorkOrderFIFOPlans(params.rawMaterials, params.wasteLines);
-        return {
-          workOrderId: fallbackWO.id,
-          totalRawCost: fifoPlans.totalRawCost,
-          totalWasteCost: fifoPlans.totalWasteCost,
-          outputUnitCost: fifoPlans.totalRawCost > 0 && params.outputQuantity > 0 ? (fifoPlans.totalRawCost - fifoPlans.totalWasteCost) / params.outputQuantity : 0,
-          rawPlans: fifoPlans.rawPlans,
-          wastePlans: fifoPlans.wastePlans,
-          netProduceCost: (fifoPlans.totalRawCost - fifoPlans.totalWasteCost),
-          details: {
-            rawCost: fifoPlans.totalRawCost,
-            wasteCost: fifoPlans.totalWasteCost,
-            netCost: (fifoPlans.totalRawCost - fifoPlans.totalWasteCost),
-            unitCost: fifoPlans.totalRawCost > 0 && params.outputQuantity > 0 ? (fifoPlans.totalRawCost - fifoPlans.totalWasteCost) / params.outputQuantity : 0,
-            consumptions: []
-          }
-        } as any;
+      const parsed = parseRpcError(err);
+      telemetry.error('wo.submit.failed', err, { code: parsed.code });
+
+      // Network-reply-lost recovery: the RPC may have committed before the
+      // reply made it back. If we have a client_request_id, look up by it.
+      if (params.clientRequestId) {
+        const fallbackWO = await findWorkOrderByClientRequestId(params.clientRequestId);
+        if (fallbackWO) {
+          telemetry.event('wo.submit.recovered_after_failure', { workOrderId: fallbackWO.id });
+          const fifoPlans = await calculateWorkOrderFIFOPlans(params.rawMaterials, params.wasteLines);
+          return {
+            workOrderId: fallbackWO.id,
+            totalRawCost: fifoPlans.totalRawCost,
+            totalWasteCost: fifoPlans.totalWasteCost,
+            outputUnitCost: fifoPlans.totalRawCost > 0 && params.outputQuantity > 0 ? (fifoPlans.totalRawCost - fifoPlans.totalWasteCost) / params.outputQuantity : 0,
+            rawPlans: fifoPlans.rawPlans,
+            wastePlans: fifoPlans.wastePlans,
+            netProduceCost: (fifoPlans.totalRawCost - fifoPlans.totalWasteCost),
+            wasDuplicate: true,
+            details: {
+              rawCost: fifoPlans.totalRawCost,
+              wasteCost: fifoPlans.totalWasteCost,
+              netCost: (fifoPlans.totalRawCost - fifoPlans.totalWasteCost),
+              unitCost: fifoPlans.totalRawCost > 0 && params.outputQuantity > 0 ? (fifoPlans.totalRawCost - fifoPlans.totalWasteCost) / params.outputQuantity : 0,
+              consumptions: [],
+            },
+          } as any;
+        }
       }
       throw err;
     }
@@ -301,7 +298,11 @@ export async function createWorkOrder(params: WorkOrderParams): Promise<WorkOrde
       throw new Error('Work order creation failed');
     }
 
-    console.log('Work order created successfully:', result);
+    if (result.was_duplicate) {
+      telemetry.event('wo.submit.dedup_hit', { workOrderId: result.work_order_id });
+    } else {
+      telemetry.event('wo.submit.succeeded', { workOrderId: result.work_order_id });
+    }
 
     // Calculate plans for return data (for UI compatibility)
     const fifoPlans = await calculateWorkOrderFIFOPlans(params.rawMaterials, params.wasteLines);
@@ -331,6 +332,7 @@ export async function createWorkOrder(params: WorkOrderParams): Promise<WorkOrde
       // validation, // Temporarily disabled
       // Additional details for verification
       netProduceCost: result.net_produce_cost,
+      wasDuplicate: !!result.was_duplicate,
       details: {
         rawCost: result.total_raw_cost,
         wasteCost: result.total_waste_cost,

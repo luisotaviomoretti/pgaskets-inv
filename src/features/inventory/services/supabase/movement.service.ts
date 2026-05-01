@@ -129,7 +129,13 @@ export async function getMovements(filters?: {
 }
 
 /**
- * Create RECEIVE movement with FIFO layer creation using transactional RPC
+ * Create RECEIVE movement with FIFO layer creation using transactional RPC.
+ *
+ * Idempotency contract (migration 045):
+ *   - When `clientRequestId` is provided, the RPC dedups atomically: same
+ *     UUID returns the previously-persisted movement with `was_duplicate=true`.
+ *   - Same submission retries (network failure → resubmit) MUST reuse the
+ *     same UUID. New submissions MUST generate a new UUID.
  */
 export async function createReceiveMovement(params: {
   skuId: string;
@@ -140,17 +146,11 @@ export async function createReceiveMovement(params: {
   packingSlipNo?: string;
   lotNumber?: string;
   notes?: string;
+  clientRequestId?: string;
 }): Promise<MovementWithDetails> {
   try {
     // Get or create vendor
     const vendor = await createOrGetVendorByName(params.vendorName);
-
-    console.log('Creating receive movement with transactional RPC:', {
-      skuId: params.skuId,
-      quantity: params.quantity,
-      unitCost: params.unitCost,
-      vendorId: vendor.id
-    });
 
     // Call transactional RPC
     const { data: result, error } = await supabase.rpc('create_receiving_transaction', {
@@ -161,19 +161,30 @@ export async function createReceiveMovement(params: {
       p_vendor_id: vendor.id,
       p_packing_slip_no: params.packingSlipNo || null,
       p_reference: params.packingSlipNo || `RCV-${Date.now()}`,
-      p_notes: params.notes || null
+      p_notes: params.notes || null,
+      p_client_request_id: params.clientRequestId || null,
     });
 
     if (error) {
-      console.error('Error creating receive movement via RPC:', error);
+      // Network-reply-lost recovery: if the RPC committed before the reply
+      // dropped, the row exists. Look up by client_request_id.
+      if (params.clientRequestId) {
+        const { data: existing } = await supabase
+          .from('movements')
+          .select('*, skus (id, description, unit), vendors (name)')
+          .eq('client_request_id', params.clientRequestId)
+          .limit(1)
+          .single();
+        if (existing) {
+          return mapMovementRowToUI(existing as any);
+        }
+      }
       throw error;
     }
 
     if (!result?.success) {
       throw new Error('Receive movement creation failed');
     }
-
-    console.log('Receive movement created successfully:', result);
 
     // Fetch the created movement for return
     const { data: movement, error: fetchError } = await supabase

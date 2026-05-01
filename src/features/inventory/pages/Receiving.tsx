@@ -62,6 +62,15 @@ import {
 // Zod schema for runtime validation
 import { receivePayloadSchema } from '@/features/inventory/types/schemas';
 import { telemetry } from '@/features/inventory/services/telemetry';
+import { describeRpcError } from '@/features/inventory/types/errors';
+
+// Cross-environment UUID generator (older browsers may lack crypto.randomUUID).
+function generateClientRequestId(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
 import { getFeatureFlag } from '@/lib/featureFlags';
 import { SkuPickerModal } from '@/features/inventory/components/SkuPicker';
 
@@ -253,11 +262,13 @@ function DamageModal({
                 <Input
                   id="damaged-qty"
                   type="number"
-                  min="1"
-                  max={totalQty - 1}
+                  step="0.001"
+                  min="0"
+                  max={totalQty - 0.001}
                   value={damagedQty || ''}
                   onChange={(e) => {
-                    const val = parseInt(e.target.value) || 0;
+                    const parsed = parseFloat(e.target.value);
+                    const val = Number.isFinite(parsed) ? Math.round(parsed * 1000) / 1000 : 0;
                     setDamagedQty(val);
                     setErrors(prev => ({ ...prev, quantity: '' }));
                   }}
@@ -890,11 +901,22 @@ export default function Receiving({ vendors, skus, layersBySku, movements, onUpd
     return errors;
   }, [receivingLines, sharedFields]);
 
+  // Single-flight guard for the batch flow.
+  const batchSubmittingRef = useRef<boolean>(false);
+  // Per-line idempotency UUID map. Lines retain their UUID across retries of
+  // the same batch so the server can dedup correctly. Cleared after a fully
+  // successful batch (when the form resets).
+  const batchClientRequestIdsRef = useRef<Map<string, string>>(new Map());
+
   // Process all receiving lines in batch
   const processAllReceivings = useCallback(async () => {
+    if (batchSubmittingRef.current) return;
+    batchSubmittingRef.current = true;
+
     const errors = validateAllLines();
     if (Object.keys(errors).length > 0) {
       notify('Please fix validation errors before processing', 'error');
+      batchSubmittingRef.current = false;
       return;
     }
 
@@ -906,7 +928,14 @@ export default function Receiving({ vendors, skus, layersBySku, movements, onUpd
       for (const line of receivingLines) {
         try {
           const { receiveQty, damageQty } = getEffectiveQuantities(line);
-          
+
+          // Get-or-create idempotency UUID for this line (stable across retries).
+          let lineRequestId = batchClientRequestIdsRef.current.get(line.id);
+          if (!lineRequestId) {
+            lineRequestId = generateClientRequestId();
+            batchClientRequestIdsRef.current.set(line.id, lineRequestId);
+          }
+
           // Process RECEIVE movement (only if there's quantity to receive)
           if (receiveQty > 0) {
             await processReceiving({
@@ -916,7 +945,8 @@ export default function Receiving({ vendors, skus, layersBySku, movements, onUpd
               date: new Date(sharedFields.date),
               vendorName: sharedFields.vendor,
               packingSlipNo: sharedFields.packingSlip || undefined,
-              notes: sharedFields.globalNotes?.trim() || undefined
+              notes: sharedFields.globalNotes?.trim() || undefined,
+              clientRequestId: lineRequestId,
             });
           }
           
@@ -950,19 +980,20 @@ export default function Receiving({ vendors, skus, layersBySku, movements, onUpd
           }
           
           results.push({ line, success: true });
-          const statusText = receiveQty > 0 && damageQty > 0 
+          const statusText = receiveQty > 0 && damageQty > 0
             ? `received ${receiveQty}, damaged ${damageQty}`
-            : receiveQty > 0 
-            ? `received ${receiveQty}` 
+            : receiveQty > 0
+            ? `received ${receiveQty}`
             : `damaged ${damageQty}`;
           notify(`✓ ${line.skuId} ${statusText}`, 'success');
         } catch (error: any) {
-          results.push({ 
-            line, 
-            success: false, 
-            error: error.message || 'Processing failed' 
+          const { userMessage } = describeRpcError(error);
+          results.push({
+            line,
+            success: false,
+            error: userMessage,
           });
-          notify(`✗ ${line.skuId} failed: ${error.message}`, 'error');
+          notify(`✗ ${line.skuId} failed: ${userMessage}`, 'error');
         }
       }
 
@@ -975,19 +1006,29 @@ export default function Receiving({ vendors, skus, layersBySku, movements, onUpd
       if (successCount === totalCount) {
         notify(`All ${totalCount} items processed successfully!`, 'success');
         // Reset form on complete success
-        setReceivingLines([{ 
-          id: '1', 
-          skuId: '', 
-          qty: 0, 
-          unitCost: 0, 
+        setReceivingLines([{
+          id: '1',
+          skuId: '',
+          qty: 0,
+          unitCost: 0,
           isDamaged: false,
           damageScope: 'NONE',
           damagedQty: 0,
           damageNotes: ''
         }]);
         setSharedFields(prev => ({ ...prev, globalNotes: '', packingSlip: '' }));
+        // Clear all per-line idempotency nonces — next batch is a fresh
+        // submission and must NOT dedupe against any of these.
+        batchClientRequestIdsRef.current.clear();
       } else {
         notify(`${successCount}/${totalCount} items processed successfully`, 'info');
+        // Drop nonces for successfully-processed lines so they cannot interfere
+        // with later edits, but retain nonces for failed lines so retrying
+        // them dedupes correctly if the failure was actually a network drop
+        // after server commit.
+        for (const r of results) {
+          if (r.success) batchClientRequestIdsRef.current.delete(r.line.id);
+        }
       }
 
       // Refresh inventory and movements to get real data from database
@@ -1002,8 +1043,9 @@ export default function Receiving({ vendors, skus, layersBySku, movements, onUpd
       
     } finally {
       setBatchProcessing(false);
+      batchSubmittingRef.current = false;
     }
-  }, [receivingLines, sharedFields, validateAllLines, notify, onUpdateLayers, onUpdateSKU]);
+  }, [receivingLines, sharedFields, validateAllLines, notify, onUpdateLayers, onUpdateSKU, onRefreshMovements]);
 
   // Focus management and keyboard handling for the confirmation modal
   useEffect(() => {
@@ -1200,10 +1242,24 @@ export default function Receiving({ vendors, skus, layersBySku, movements, onUpd
   // API mutation for receiving
   const [isPending, setIsPending] = useState(false);
 
+  // Single-flight guard for the confirm-dialog Approve flow.
+  const performApproveSubmittingRef = useRef<boolean>(false);
+  // Idempotency UUID for the current submission (RECEIVE leg). Reset to null
+  // after success so the next form submit gets a fresh nonce.
+  const performApproveRequestIdRef = useRef<string | null>(null);
+  // Separate UUID for the optional DAMAGE leg, since each leg goes through a
+  // different RPC and must not share an idempotency key.
+  const performApproveDamageRequestIdRef = useRef<string | null>(null);
+
   // Actual submission logic (called after user confirms)
   const performApprove = async () => {
+    // Single-flight guard: synchronous check before any awaits.
+    if (performApproveSubmittingRef.current) return;
+    performApproveSubmittingRef.current = true;
+
     if (!isFormValid) {
       focusFirstError();
+      performApproveSubmittingRef.current = false;
       return;
     }
     const ref = packingSlip || `PS-${Date.now()}`;
@@ -1239,12 +1295,14 @@ export default function Receiving({ vendors, skus, layersBySku, movements, onUpd
       setRejectedQty(0);
       setNotes('');
       setConfirmOpen(false);
+      performApproveSubmittingRef.current = false;
       return;
     }
 
     if (acceptQty <= 0) {
       notify('No quantity to accept (all rejected)', 'error');
       setConfirmOpen(false);
+      performApproveSubmittingRef.current = false;
       return;
     }
 
@@ -1285,6 +1343,7 @@ export default function Receiving({ vendors, skus, layersBySku, movements, onUpd
       notify(message, 'error');
       focusFirstError();
       setConfirmOpen(false);
+      performApproveSubmittingRef.current = false;
       return;
     }
 
@@ -1297,6 +1356,16 @@ export default function Receiving({ vendors, skus, layersBySku, movements, onUpd
       cost: unitCost
     };
 
+    // Generate fresh idempotency UUIDs for this submission if not already set
+    // (a previous failed attempt may have set them; we reuse those so the
+    // server can dedup if the failed call actually committed).
+    if (!performApproveRequestIdRef.current) {
+      performApproveRequestIdRef.current = generateClientRequestId();
+    }
+    if (!performApproveDamageRequestIdRef.current) {
+      performApproveDamageRequestIdRef.current = generateClientRequestId();
+    }
+
     try {
       setIsPending(true);
       await processReceiving({
@@ -1307,6 +1376,7 @@ export default function Receiving({ vendors, skus, layersBySku, movements, onUpd
         vendorName: vendorValue,
         packingSlipNo: ref,
         notes: notes?.trim() || undefined,
+        clientRequestId: performApproveRequestIdRef.current,
       });
 
       // Local optimistic updates
@@ -1385,19 +1455,28 @@ export default function Receiving({ vendors, skus, layersBySku, movements, onUpd
       setNotes('');
       setErrors({});
       setConfirmOpen(false);
+
+      // Submission lifecycle is over — clear nonces so the next submit gets
+      // fresh ones (a new submission must NEVER dedupe against a prior one).
+      performApproveRequestIdRef.current = null;
+      performApproveDamageRequestIdRef.current = null;
     } catch (e: any) {
-      const message = e?.message || 'Failed to submit receiving. Please try again.';
-      notify(message, 'error');
+      const { code, userMessage } = describeRpcError(e);
+      notify(userMessage, 'error');
       telemetry.error('receiving_submit_failed', e, {
         sku: receivingSku,
         acceptQty,
         unitCost,
         ref,
+        code,
       });
       setConfirmOpen(false);
+      // Keep the nonce so a retry of the SAME submission can dedupe at the
+      // server.
       return;
     } finally {
       setIsPending(false);
+      performApproveSubmittingRef.current = false;
     }
   };
 

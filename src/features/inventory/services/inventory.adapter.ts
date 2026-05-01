@@ -183,6 +183,7 @@ export const movementOperations = {
     packingSlipNo?: string;
     lotNumber?: string;
     notes?: string;
+    clientRequestId?: string;
   }): Promise<MovementWithDetails> {
     return await MovementService.createReceiveMovement(params);
   },
@@ -423,6 +424,7 @@ export async function processReceiving(params: {
   packingSlipNo?: string;
   lotNumber?: string;
   notes?: string;
+  clientRequestId?: string;
 }): Promise<MovementWithDetails> {
   return movementOperations.createReceiveMovement(params);
 }
@@ -437,6 +439,7 @@ export async function processWorkOrder(params: {
   date: Date;
   reference?: string;
   notes?: string;
+  clientRequestId?: string;
 }) {
   return workOrderOperations.createWorkOrder(params);
 }

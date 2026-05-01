@@ -67,9 +67,10 @@ vi.mock('@/features/inventory/services/supabase/fifo.service', () => {
 import { supabase, __setMockWorkOrders, __resetSupabaseMock } from '@/lib/supabase';
 import { createWorkOrder } from '../workorder.service';
 
-function successRpcPayload(id: string) {
+function successRpcPayload(id: string, opts?: { wasDuplicate?: boolean }) {
   return {
     success: true,
+    was_duplicate: !!opts?.wasDuplicate,
     work_order_id: id,
     total_raw_cost: 100,
     total_waste_cost: 20,
@@ -79,7 +80,7 @@ function successRpcPayload(id: string) {
   };
 }
 
-describe('createWorkOrder - Retry & Idempotency', () => {
+describe('createWorkOrder - Retry & Idempotency (post-044)', () => {
   beforeEach(() => {
     __resetSupabaseMock();
   });
@@ -88,7 +89,7 @@ describe('createWorkOrder - Retry & Idempotency', () => {
     vi.useRealTimers();
   });
 
-  it('retries on 40001 and succeeds', async () => {
+  it('retries on 40001 (serialization) and succeeds on second attempt', async () => {
     vi.useFakeTimers();
 
     let call = 0;
@@ -108,10 +109,10 @@ describe('createWorkOrder - Retry & Idempotency', () => {
       wasteLines: [],
       date: new Date(),
       reference: 'REF-R1',
-      notes: 'test'
+      notes: 'test',
+      clientRequestId: '11111111-1111-1111-1111-111111111111',
     });
 
-    // advance first backoff 100ms
     await vi.advanceTimersByTimeAsync(100);
 
     const res = await p;
@@ -119,34 +120,60 @@ describe('createWorkOrder - Retry & Idempotency', () => {
     expect((supabase.rpc as any).mock.calls.length).toBe(2);
   });
 
-  it('returns existing immediately via idempotency pre-check (no RPC call)', async () => {
-    __setMockWorkOrders([
-      { id: 'WO-EXIST-1', invoice_no: 'REF-ID1', output_name: 'Prod X', output_quantity: 3 }
-    ]);
+  it('forwards p_client_request_id to the RPC', async () => {
+    (supabase.rpc as any).mockResolvedValue({ data: successRpcPayload('WO-FWD-1'), error: null });
+    __setMockWorkOrders([]);
 
-    const res = await createWorkOrder({
-      outputName: 'Prod X',
-      outputQuantity: 3,
+    const cid = '22222222-2222-2222-2222-222222222222';
+    await createWorkOrder({
+      outputName: 'Prod CID',
+      outputQuantity: 1,
       rawMaterials: [{ skuId: 'RW-2', quantity: 1 }],
       wasteLines: [],
       date: new Date(),
-      reference: 'REF-ID1',
-      notes: 'precheck'
+      reference: 'REF-CID',
+      notes: 'cid-test',
+      clientRequestId: cid,
     });
 
-    expect(res.workOrderId).toBe('WO-EXIST-1');
-    expect((supabase.rpc as any).mock.calls.length).toBe(0);
+    const calls = (supabase.rpc as any).mock.calls;
+    expect(calls.length).toBe(1);
+    const params = calls[0][1];
+    expect(params.p_client_request_id).toBe(cid);
   });
 
-  it('after failed retries, fallback finds existing and returns it', async () => {
+  it('passes through was_duplicate=true when server reports an idempotency hit', async () => {
+    (supabase.rpc as any).mockResolvedValue({
+      data: successRpcPayload('WO-DUP', { wasDuplicate: true }),
+      error: null,
+    });
+    __setMockWorkOrders([]);
+
+    const res: any = await createWorkOrder({
+      outputName: 'Prod Dup',
+      outputQuantity: 1,
+      rawMaterials: [{ skuId: 'RW-2', quantity: 1 }],
+      wasteLines: [],
+      date: new Date(),
+      reference: 'REF-DUP',
+      notes: 'dup-test',
+      clientRequestId: '33333333-3333-3333-3333-333333333333',
+    });
+
+    expect(res.workOrderId).toBe('WO-DUP');
+    expect(res.wasDuplicate).toBe(true);
+  });
+
+  it('after exhausting retries, falls back to client_request_id lookup if WO already committed', async () => {
     vi.useFakeTimers();
 
     let created = false;
     (supabase.rpc as any).mockImplementation(async () => {
-      // Simulate that the first attempt actually created the WO but response failed
+      // Simulate that the first attempt actually created the WO but the
+      // network reply dropped, then subsequent attempts hit deadlocks.
       if (!created) {
         __setMockWorkOrders([
-          { id: 'WO-EXIST-2', invoice_no: 'REF-FB1', output_name: 'Prod FB', output_quantity: 2 }
+          { id: 'WO-FB-1', invoice_no: 'REF-FB1', client_request_id: '44444444-4444-4444-4444-444444444444' }
         ]);
         created = true;
       }
@@ -160,18 +187,19 @@ describe('createWorkOrder - Retry & Idempotency', () => {
       wasteLines: [],
       date: new Date(),
       reference: 'REF-FB1',
-      notes: 'fallback'
+      notes: 'fallback',
+      clientRequestId: '44444444-4444-4444-4444-444444444444',
     });
 
-    // advance 3 attempts: 100 + 200 + 400
     await vi.advanceTimersByTimeAsync(100 + 200 + 400);
 
-    const res = await p;
-    expect(res.workOrderId).toBe('WO-EXIST-2');
+    const res: any = await p;
+    expect(res.workOrderId).toBe('WO-FB-1');
+    expect(res.wasDuplicate).toBe(true);
     expect((supabase.rpc as any).mock.calls.length).toBeGreaterThanOrEqual(1);
   });
 
-  it('throws after max retries when no fallback exists', async () => {
+  it('throws after max retries when no row exists for the client_request_id', async () => {
     vi.useFakeTimers();
 
     (supabase.rpc as any).mockImplementation(async () => {
@@ -186,37 +214,24 @@ describe('createWorkOrder - Retry & Idempotency', () => {
       wasteLines: [],
       date: new Date(),
       reference: 'REF-NOFB',
-      notes: 'max-retries'
+      notes: 'max-retries',
+      clientRequestId: '55555555-5555-5555-5555-555555555555',
     });
+    // Attach a noop catch so vi.advanceTimers doesn't surface an unhandled
+    // rejection while the retry loop is still in flight.
+    p.catch(() => {});
 
     await vi.advanceTimersByTimeAsync(100 + 200 + 400);
     await expect(p).rejects.toBeTruthy();
     expect((supabase.rpc as any).mock.calls.length).toBe(3);
   });
 
-  it('does not treat different output_name/output_quantity as same WO (no idempotency when mismatch)', async () => {
-    __setMockWorkOrders([
-      { id: 'WO-MISMATCH', invoice_no: 'REF-MM', output_name: 'Prod Y', output_quantity: 5 }
-    ]);
-
-    (supabase.rpc as any).mockResolvedValue({ data: successRpcPayload('WO-NEW'), error: null });
-
-    const res = await createWorkOrder({
-      outputName: 'Prod Z', // mismatch name
-      outputQuantity: 6,     // mismatch quantity
-      rawMaterials: [{ skuId: 'RW-5', quantity: 3 }],
-      wasteLines: [],
-      date: new Date(),
-      reference: 'REF-MM',
-      notes: 'mismatch'
+  it('non-retriable errors (e.g. INVALID_INPUT envelope) are thrown without retry', async () => {
+    (supabase.rpc as any).mockResolvedValue({
+      data: null,
+      error: { code: '23514', message: '{"code":"INVALID_INPUT","detail":"Output quantity must be positive"}' },
     });
-
-    expect(res.workOrderId).toBe('WO-NEW');
-    expect((supabase.rpc as any).mock.calls.length).toBe(1);
-  });
-
-  it('when reference is missing, no idempotency applies and non-retriable errors are thrown', async () => {
-    (supabase.rpc as any).mockResolvedValue({ data: null, error: { code: '23514', message: 'check constraint' } });
+    __setMockWorkOrders([]);
 
     await expect(createWorkOrder({
       outputName: 'Prod NR',
@@ -224,8 +239,9 @@ describe('createWorkOrder - Retry & Idempotency', () => {
       rawMaterials: [{ skuId: 'RW-6', quantity: 1 }],
       wasteLines: [],
       date: new Date(),
-      // reference omitted
-      notes: 'no-ref'
+      reference: 'REF-NR',
+      notes: 'no-retry',
+      clientRequestId: '66666666-6666-6666-6666-666666666666',
     } as any)).rejects.toBeTruthy();
 
     expect((supabase.rpc as any).mock.calls.length).toBe(1);
