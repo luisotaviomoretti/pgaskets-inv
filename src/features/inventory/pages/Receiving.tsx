@@ -851,20 +851,41 @@ export default function Receiving({ vendors, skus, layersBySku, movements, onUpd
   const [batchResults, setBatchResults] = useState<BatchResult[]>([]);
   const [showBatchResults, setShowBatchResults] = useState(false);
 
+  // A line is "completely empty" when the user added it (e.g. clicked + Add
+  // Item) but never filled anything in. Phase 5 lets us ignore these silently
+  // when at least one real line exists, preventing a phantom blank row at the
+  // bottom of the form from blocking the entire submit.
+  const isLineCompletelyEmpty = useCallback((line: ReceivingLine) => {
+    return !line.skuId
+      && line.qty === 0
+      && line.unitCost === 0
+      && !line.isDamaged
+      && !line.damageNotes;
+  }, []);
+
   // Validate all receiving lines
   const validateAllLines = useCallback((): Record<string, string> => {
     const errors: Record<string, string> = {};
-    
+    const hygieneEnabled = getFeatureFlag('RECEIVING_DRAFT_LINE_HYGIENE');
+
     // Validate shared fields
     if (!sharedFields.vendor.trim()) errors.vendor = 'Vendor is required';
     if (!sharedFields.date) errors.date = 'Date is required';
-    
+
+    // Decide which lines participate in validation. With hygiene on, fully-empty
+    // trailing/parallel lines are skipped *only* when at least one filled line
+    // exists, so the initial blank-form state still blocks submit as before.
+    const hasAnyFilledLine = receivingLines.some(l => !isLineCompletelyEmpty(l));
+    const linesToValidate = hygieneEnabled && hasAnyFilledLine
+      ? receivingLines.filter(l => !isLineCompletelyEmpty(l))
+      : receivingLines;
+
     // Validate receiving lines
-    receivingLines.forEach((line, index) => {
+    linesToValidate.forEach((line) => {
       if (!line.skuId) errors[`line-${line.id}-sku`] = 'SKU is required';
       if (line.qty <= 0) errors[`line-${line.id}-qty`] = 'Quantity must be greater than 0';
       if (line.unitCost <= 0) errors[`line-${line.id}-cost`] = 'Unit cost must be greater than 0';
-      
+
       // Validate damage configuration
       if (line.isDamaged) {
         if (line.damageScope === 'PARTIAL') {
@@ -879,27 +900,28 @@ export default function Receiving({ vendors, skus, layersBySku, movements, onUpd
         }
       }
     });
-    
-    // Check for duplicate SKUs
-    const skuCounts = receivingLines.reduce((acc, line) => {
-      if (line.skuId) {
-        acc[line.skuId] = (acc[line.skuId] || 0) + 1;
-      }
-      return acc;
-    }, {} as Record<string, number>);
-    
-    Object.entries(skuCounts).forEach(([skuId, count]) => {
-      if (count > 1) {
-        receivingLines.forEach(line => {
-          if (line.skuId === skuId) {
-            errors[`line-${line.id}-duplicate`] = 'Duplicate SKU detected';
-          }
-        });
+
+    // Check for duplicate SKUs.
+    // Only the *later* occurrence is flagged as the offender; the first
+    // occurrence stays clean so the user knows which line is the canonical
+    // one to keep. Message references the canonical line number for clarity.
+    // Note: duplicate detection runs over ALL lines (not just filtered) using
+    // the original index so the error message references the user-visible
+    // line number even when hygiene is filtering empties.
+    const firstIndexBySku: Record<string, number> = {};
+    receivingLines.forEach((line, idx) => {
+      if (!line.skuId) return;
+      if (firstIndexBySku[line.skuId] === undefined) {
+        firstIndexBySku[line.skuId] = idx;
+      } else {
+        const firstIdx = firstIndexBySku[line.skuId];
+        errors[`line-${line.id}-duplicate`] =
+          `Same SKU already in line ${firstIdx + 1} — please consolidate or remove this line`;
       }
     });
-    
+
     return errors;
-  }, [receivingLines, sharedFields]);
+  }, [receivingLines, sharedFields, isLineCompletelyEmpty]);
 
   // Single-flight guard for the batch flow.
   const batchSubmittingRef = useRef<boolean>(false);
@@ -913,8 +935,40 @@ export default function Receiving({ vendors, skus, layersBySku, movements, onUpd
     if (batchSubmittingRef.current) return;
     batchSubmittingRef.current = true;
 
-    const errors = validateAllLines();
-    if (Object.keys(errors).length > 0) {
+    const validationErrors = validateAllLines();
+    const validLineCount = receivingLines.filter(l => l.skuId && l.qty > 0).length;
+    telemetry.event('receiving_batch_submit_attempt', {
+      lineCount: receivingLines.length,
+      validLineCount,
+    });
+
+    if (Object.keys(validationErrors).length > 0) {
+      // Aggregate counters by error class — no PII, just shape of the failure.
+      const reasonCounts = {
+        missingSku: 0,
+        missingQty: 0,
+        missingCost: 0,
+        duplicateSku: 0,
+        damageQty: 0,
+        damageNotes: 0,
+        missingVendor: 0,
+        missingDate: 0,
+      };
+      for (const key of Object.keys(validationErrors)) {
+        if (key === 'vendor') reasonCounts.missingVendor++;
+        else if (key === 'date') reasonCounts.missingDate++;
+        else if (key.endsWith('-sku')) reasonCounts.missingSku++;
+        else if (key.endsWith('-qty')) reasonCounts.missingQty++;
+        else if (key.endsWith('-cost')) reasonCounts.missingCost++;
+        else if (key.endsWith('-duplicate')) reasonCounts.duplicateSku++;
+        else if (key.endsWith('-damage-qty')) reasonCounts.damageQty++;
+        else if (key.endsWith('-damage-notes')) reasonCounts.damageNotes++;
+      }
+      telemetry.event('receiving_batch_validation_blocked', {
+        lineCount: receivingLines.length,
+        validLineCount,
+        reasonCounts,
+      });
       notify('Please fix validation errors before processing', 'error');
       batchSubmittingRef.current = false;
       return;
@@ -1002,7 +1056,12 @@ export default function Receiving({ vendors, skus, layersBySku, movements, onUpd
 
       const successCount = results.filter(r => r.success).length;
       const totalCount = results.length;
-      
+      telemetry.event('receiving_batch_submit_result', {
+        successCount,
+        totalCount,
+        failedCount: totalCount - successCount,
+      });
+
       if (successCount === totalCount) {
         notify(`All ${totalCount} items processed successfully!`, 'success');
         // Reset form on complete success
@@ -1139,12 +1198,94 @@ export default function Receiving({ vendors, skus, layersBySku, movements, onUpd
 
   // Form validation
   const isFormValid = useMemo(() => {
-    return Object.keys(errors).length === 0 && 
-           vendorValue.trim().length >= 3 && 
-           receivingSku && 
-           receivingQty > 0 && 
+    return Object.keys(errors).length === 0 &&
+           vendorValue.trim().length >= 3 &&
+           receivingSku &&
+           receivingQty > 0 &&
            unitCost > 0;
   }, [errors, vendorValue, receivingSku, receivingQty, unitCost]);
+
+  // Feature flags for the new validation UX (Phases 3–6).
+  // All gated independently so any phase can be rolled back via flag without
+  // touching code paths.
+  const validationBannerEnabled = getFeatureFlag('RECEIVING_VALIDATION_SUMMARY_BANNER');
+  const processButtonGatingEnabled = getFeatureFlag('RECEIVING_PROCESS_BUTTON_GATING');
+  const draftLineHygieneEnabled = getFeatureFlag('RECEIVING_DRAFT_LINE_HYGIENE');
+  const duplicatePreventionDropdownEnabled = getFeatureFlag('RECEIVING_DUPLICATE_PREVENTION_DROPDOWN');
+
+  // Classify the flat `errors` map into actionable buckets so the summary
+  // banner can render meaningful, focusable bullets (Phase 3).
+  // Each bucket carries the ordered list of receivingLines indexes affected,
+  // letting clicks scroll to the *first* offending line of that class.
+  type SummaryBucket = { count: number; firstLineIndex: number; firstLineId: string; field?: string };
+  const validationSummary = useMemo(() => {
+    const indexById = new Map(receivingLines.map((l, i) => [l.id, i] as const));
+    const lineBuckets: Record<string, SummaryBucket> = {};
+    let missingVendor = false;
+    let missingDate = false;
+
+    const pushLine = (key: string, lineId: string, field: string) => {
+      const idx = indexById.get(lineId);
+      if (idx === undefined) return;
+      const bucket = lineBuckets[key];
+      if (!bucket) {
+        lineBuckets[key] = { count: 1, firstLineIndex: idx, firstLineId: lineId, field };
+      } else {
+        bucket.count += 1;
+        if (idx < bucket.firstLineIndex) {
+          bucket.firstLineIndex = idx;
+          bucket.firstLineId = lineId;
+        }
+      }
+    };
+
+    for (const key of Object.keys(errors)) {
+      if (key === 'vendor') { missingVendor = true; continue; }
+      if (key === 'date') { missingDate = true; continue; }
+      const m = key.match(/^line-(.+?)-(sku|qty|cost|duplicate|damage-qty|damage-notes)$/);
+      if (!m) continue;
+      const [, lineId, kind] = m;
+      switch (kind) {
+        case 'sku': pushLine('missingSku', lineId, 'sku'); break;
+        case 'qty': pushLine('missingQty', lineId, 'qty'); break;
+        case 'cost': pushLine('missingCost', lineId, 'cost'); break;
+        case 'duplicate': pushLine('duplicate', lineId, 'sku'); break;
+        case 'damage-qty': pushLine('damageQty', lineId, 'sku'); break;
+        case 'damage-notes': pushLine('damageNotes', lineId, 'sku'); break;
+      }
+    }
+
+    return { lineBuckets, missingVendor, missingDate };
+  }, [errors, receivingLines]);
+
+  const totalErrorCount = useMemo(() => Object.keys(errors).length, [errors]);
+
+  // Scroll to and focus the first input that corresponds to a given line+field.
+  // Falls back gracefully if the input cannot be resolved (e.g. SKU picker modal mode).
+  const focusBatchField = useCallback((lineId: string, field: 'sku' | 'qty' | 'cost') => {
+    const id = `${field}-${lineId}`;
+    const el = document.getElementById(id);
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      // Defer focus until after smooth scroll begins so iOS Safari respects it.
+      setTimeout(() => {
+        try { (el as HTMLElement).focus({ preventScroll: true }); } catch { /* noop */ }
+      }, 50);
+      return;
+    }
+    // Fallback: scroll to whatever the first row containing this line is.
+    const row = document.getElementById(`sku-${lineId}`)?.closest('div');
+    row?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }, []);
+
+  const focusSharedField = useCallback((id: string) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    setTimeout(() => {
+      try { (el as HTMLElement).focus({ preventScroll: true }); } catch { /* noop */ }
+    }, 50);
+  }, []);
 
   // Recent RECEIVE movements for display
   const recentReceives = useMemo(() => {
@@ -1757,16 +1898,25 @@ export default function Receiving({ vendors, skus, layersBySku, movements, onUpd
                 <h3 className="text-sm font-semibold text-slate-900">Receiving Items</h3>
                 <p className="text-xs text-slate-500 mt-1">Add multiple SKUs to process in this batch</p>
               </div>
-              <Button 
-                type="button" 
-                variant="outline" 
-                size="sm" 
-                onClick={addReceivingLine}
-                className="text-green-700 border-green-300 hover:bg-green-50 hover:border-green-400 transition-colors"
-              >
-                <Plus className="h-4 w-4 mr-2" />
-                Add Item
-              </Button>
+              {(() => {
+                const lastLine = receivingLines[receivingLines.length - 1];
+                const lastIsEmpty = lastLine ? isLineCompletelyEmpty(lastLine) : false;
+                const blockAdd = draftLineHygieneEnabled && lastIsEmpty && receivingLines.length >= 1;
+                return (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={addReceivingLine}
+                    disabled={blockAdd}
+                    title={blockAdd ? 'Fill the current line before adding another' : undefined}
+                    className="text-green-700 border-green-300 hover:bg-green-50 hover:border-green-400 transition-colors disabled:opacity-50 disabled:hover:bg-transparent"
+                  >
+                    <Plus className="h-4 w-4 mr-2" />
+                    Add Item
+                  </Button>
+                );
+              })()}
             </div>
 
             <div className="border rounded-lg overflow-hidden">
@@ -1808,8 +1958,19 @@ export default function Receiving({ vendors, skus, layersBySku, movements, onUpd
                               >
                                 {line.skuId ? `${line.skuId} — ${skus.find(s => s.id === line.skuId)?.description ?? ''}` : 'Pick SKU'}
                               </Button>
+                            ) : duplicatePreventionDropdownEnabled ? (
+                              <MultiSKUSelect
+                                id={`sku-${line.id}`}
+                                skus={skus}
+                                value={line.skuId}
+                                onChange={(value) => updateReceivingLine(line.id, { skuId: value })}
+                                error={errors[`line-${line.id}-sku`]}
+                                usedSkus={receivingLines
+                                  .filter(l => l.id !== line.id && !!l.skuId)
+                                  .map(l => l.skuId)}
+                              />
                             ) : (
-                              <SKUSelect 
+                              <SKUSelect
                                 id={`sku-${line.id}`}
                                 skus={skus}
                                 value={line.skuId}
@@ -1824,9 +1985,32 @@ export default function Receiving({ vendors, skus, layersBySku, movements, onUpd
                                 <span className="break-words">{errors[`line-${line.id}-sku`]}</span>
                               </div>
                             )}
+                            {errors[`line-${line.id}-duplicate`] && (
+                              <div
+                                className="text-xs text-red-600 flex items-start gap-1 leading-tight"
+                                role="alert"
+                              >
+                                <AlertTriangle className="h-3 w-3 shrink-0 mt-0.5" />
+                                <span className="break-words">
+                                  {errors[`line-${line.id}-duplicate`]}
+                                  {receivingLines.length > 1 && (
+                                    <>
+                                      {' '}
+                                      <button
+                                        type="button"
+                                        onClick={() => removeReceivingLine(line.id)}
+                                        className="underline font-medium hover:text-red-800"
+                                      >
+                                        Remove this line
+                                      </button>
+                                    </>
+                                  )}
+                                </span>
+                              </div>
+                            )}
                           </div>
                         </div>
-                        
+
                         {/* Quantity Column */}
                         <div className={`px-2 py-3 min-h-[60px] ${hasErrors ? "bg-red-50" : ""} ${index > 0 ? "border-t" : ""}`}>
                           <div className="space-y-1">
@@ -1993,21 +2177,178 @@ export default function Receiving({ vendors, skus, layersBySku, movements, onUpd
               </div>
             </div>
 
+            {/* Validation Summary Banner (Phase 3, flag-gated) */}
+            {validationBannerEnabled && totalErrorCount > 0 && (
+              <div
+                id="validation-summary-banner"
+                role="alert"
+                aria-live="polite"
+                className="bg-red-50 border border-red-200 rounded-lg p-4 space-y-2"
+              >
+                <div className="flex items-start gap-2">
+                  <AlertTriangle className="h-4 w-4 text-red-600 shrink-0 mt-0.5" />
+                  <div className="flex-1 space-y-2">
+                    <div className="text-sm font-medium text-red-800">
+                      Please resolve the following before processing
+                    </div>
+                    <ul className="text-xs text-red-700 space-y-1">
+                      {validationSummary.missingDate && (
+                        <li>
+                          <button
+                            type="button"
+                            className="underline hover:text-red-900 text-left"
+                            onClick={() => focusSharedField('shared-date')}
+                          >
+                            Date is required
+                          </button>
+                        </li>
+                      )}
+                      {validationSummary.missingVendor && (
+                        <li>
+                          <button
+                            type="button"
+                            className="underline hover:text-red-900 text-left"
+                            onClick={() => focusSharedField('shared-vendor')}
+                          >
+                            Vendor is required
+                          </button>
+                        </li>
+                      )}
+                      {validationSummary.lineBuckets.duplicate && (
+                        <li>
+                          <button
+                            type="button"
+                            className="underline hover:text-red-900 text-left"
+                            onClick={() => focusBatchField(
+                              validationSummary.lineBuckets.duplicate.firstLineId,
+                              'sku'
+                            )}
+                          >
+                            {validationSummary.lineBuckets.duplicate.count === 1
+                              ? `1 line has a duplicate SKU (line ${validationSummary.lineBuckets.duplicate.firstLineIndex + 1})`
+                              : `${validationSummary.lineBuckets.duplicate.count} lines have duplicate SKUs (first at line ${validationSummary.lineBuckets.duplicate.firstLineIndex + 1})`}
+                          </button>
+                        </li>
+                      )}
+                      {validationSummary.lineBuckets.missingSku && (
+                        <li>
+                          <button
+                            type="button"
+                            className="underline hover:text-red-900 text-left"
+                            onClick={() => focusBatchField(
+                              validationSummary.lineBuckets.missingSku.firstLineId,
+                              'sku'
+                            )}
+                          >
+                            {validationSummary.lineBuckets.missingSku.count === 1
+                              ? `1 line is missing an SKU (line ${validationSummary.lineBuckets.missingSku.firstLineIndex + 1})`
+                              : `${validationSummary.lineBuckets.missingSku.count} lines are missing an SKU (first at line ${validationSummary.lineBuckets.missingSku.firstLineIndex + 1})`}
+                          </button>
+                        </li>
+                      )}
+                      {validationSummary.lineBuckets.missingQty && (
+                        <li>
+                          <button
+                            type="button"
+                            className="underline hover:text-red-900 text-left"
+                            onClick={() => focusBatchField(
+                              validationSummary.lineBuckets.missingQty.firstLineId,
+                              'qty'
+                            )}
+                          >
+                            {validationSummary.lineBuckets.missingQty.count === 1
+                              ? `1 line is missing a quantity (line ${validationSummary.lineBuckets.missingQty.firstLineIndex + 1})`
+                              : `${validationSummary.lineBuckets.missingQty.count} lines are missing a quantity (first at line ${validationSummary.lineBuckets.missingQty.firstLineIndex + 1})`}
+                          </button>
+                        </li>
+                      )}
+                      {validationSummary.lineBuckets.missingCost && (
+                        <li>
+                          <button
+                            type="button"
+                            className="underline hover:text-red-900 text-left"
+                            onClick={() => focusBatchField(
+                              validationSummary.lineBuckets.missingCost.firstLineId,
+                              'cost'
+                            )}
+                          >
+                            {validationSummary.lineBuckets.missingCost.count === 1
+                              ? `1 line is missing a unit cost (line ${validationSummary.lineBuckets.missingCost.firstLineIndex + 1})`
+                              : `${validationSummary.lineBuckets.missingCost.count} lines are missing a unit cost (first at line ${validationSummary.lineBuckets.missingCost.firstLineIndex + 1})`}
+                          </button>
+                        </li>
+                      )}
+                      {validationSummary.lineBuckets.damageQty && (
+                        <li>
+                          <button
+                            type="button"
+                            className="underline hover:text-red-900 text-left"
+                            onClick={() => focusBatchField(
+                              validationSummary.lineBuckets.damageQty.firstLineId,
+                              'sku'
+                            )}
+                          >
+                            {validationSummary.lineBuckets.damageQty.count === 1
+                              ? `1 line has an invalid damaged quantity (line ${validationSummary.lineBuckets.damageQty.firstLineIndex + 1})`
+                              : `${validationSummary.lineBuckets.damageQty.count} lines have invalid damaged quantities (first at line ${validationSummary.lineBuckets.damageQty.firstLineIndex + 1})`}
+                          </button>
+                        </li>
+                      )}
+                      {validationSummary.lineBuckets.damageNotes && (
+                        <li>
+                          <button
+                            type="button"
+                            className="underline hover:text-red-900 text-left"
+                            onClick={() => focusBatchField(
+                              validationSummary.lineBuckets.damageNotes.firstLineId,
+                              'sku'
+                            )}
+                          >
+                            {validationSummary.lineBuckets.damageNotes.count === 1
+                              ? `1 line has damage notes that exceed 500 characters`
+                              : `${validationSummary.lineBuckets.damageNotes.count} lines have damage notes that exceed 500 characters`}
+                          </button>
+                        </li>
+                      )}
+                    </ul>
+                  </div>
+                </div>
+              </div>
+            )}
+
             {/* Action Buttons */}
             <div className="flex items-center justify-between pt-4">
               <div className="text-sm text-slate-500">
                 {batchProcessing && "Processing items..."}
               </div>
               <div className="flex gap-2">
-                <Button 
-                  type="button"
-                  variant="outline"
-                  onClick={() => setConfirmOpen(true)}
-                  disabled={batchProcessing || receivingLines.filter(l => l.skuId && l.qty > 0).length === 0}
-                  className="bg-blue-600 text-white hover:bg-blue-700"
-                >
-                  {batchProcessing ? "Processing..." : `Process ${receivingLines.filter(l => l.skuId && l.qty > 0).length} Items`}
-                </Button>
+                {(() => {
+                  const processableLines = receivingLines.filter(l => l.skuId && l.qty > 0).length;
+                  const blockedByErrors = processButtonGatingEnabled && totalErrorCount > 0;
+                  const disabled = batchProcessing || processableLines === 0 || blockedByErrors;
+                  const tooltip = blockedByErrors
+                    ? 'Resolve the validation errors above to enable processing'
+                    : processableLines === 0
+                      ? 'Add at least one line with SKU and quantity'
+                      : undefined;
+                  return (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() => setConfirmOpen(true)}
+                      disabled={disabled}
+                      title={tooltip}
+                      aria-describedby={blockedByErrors ? 'validation-summary-banner' : undefined}
+                      className={
+                        blockedByErrors
+                          ? 'bg-slate-200 text-slate-500 cursor-not-allowed hover:bg-slate-200'
+                          : 'bg-blue-600 text-white hover:bg-blue-700'
+                      }
+                    >
+                      {batchProcessing ? 'Processing...' : `Process ${processableLines} Items`}
+                    </Button>
+                  );
+                })()}
               </div>
             </div>
           </div>

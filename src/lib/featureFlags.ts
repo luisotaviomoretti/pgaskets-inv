@@ -24,6 +24,12 @@ export interface FeatureFlags {
   DASHBOARD_TOP_SCROLL: boolean;         // Top synced scrollbar + sticky header on Dashboard
   DASHBOARD_STICKY_COLUMNS: boolean;     // Sticky first columns (Category, SKU) on Dashboard table
   DASHBOARD_STICKY_FILTERS: boolean;     // Sticky filters + top scrollbar wrapper on Dashboard
+
+  // Receiving validation UX improvements (incremental rollout, all reversible)
+  RECEIVING_VALIDATION_SUMMARY_BANNER: boolean;     // Phase 3: actionable error summary above Process button
+  RECEIVING_PROCESS_BUTTON_GATING: boolean;         // Phase 4: disable Process when validation has errors
+  RECEIVING_DRAFT_LINE_HYGIENE: boolean;            // Phase 5: ignore fully-empty trailing lines, gate Add Item
+  RECEIVING_DUPLICATE_PREVENTION_DROPDOWN: boolean; // Phase 6: disable already-used SKUs in dropdown
 }
 
 // Environment-based defaults (safety first)
@@ -52,6 +58,12 @@ const getDefaultFlags = (): FeatureFlags => {
     DASHBOARD_TOP_SCROLL: true,            // Enable Phase 1 by default (safe UI-only)
     DASHBOARD_STICKY_COLUMNS: true,        // Enable Phase 2 by default (UI-only)
     DASHBOARD_STICKY_FILTERS: true,        // Keep filters and top scrollbar visible
+
+    // Receiving validation UX (default ON — purely additive UI, fallback paths preserved)
+    RECEIVING_VALIDATION_SUMMARY_BANNER: true,
+    RECEIVING_PROCESS_BUTTON_GATING: true,
+    RECEIVING_DRAFT_LINE_HYGIENE: true,
+    RECEIVING_DUPLICATE_PREVENTION_DROPDOWN: true,
   };
 };
 
