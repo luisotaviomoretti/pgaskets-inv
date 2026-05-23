@@ -64,12 +64,29 @@ function parseYmd(ymd: string): Date {
   return new Date(y, (m ?? 1) - 1, d ?? 1);
 }
 
-function fmtNumber(n: number, digits = 2): string {
+/**
+ * Quantity formatter — always renders as a thousands-separated integer.
+ * Display-only; Excel exports keep the raw numeric value so spreadsheet
+ * formulas and audits stay accurate.
+ */
+function fmtQty(n: number): string {
   if (!Number.isFinite(n)) return '—';
-  return n.toLocaleString('en-US', {
-    minimumFractionDigits: digits,
-    maximumFractionDigits: digits,
+  return Math.round(n).toLocaleString('en-US', {
+    maximumFractionDigits: 0,
+    minimumFractionDigits: 0,
   });
+}
+
+/** Signed quantity ("+1,234" / "−1,234" / "0"), rounded to integer. */
+function fmtQtySigned(n: number): string {
+  if (!Number.isFinite(n)) return '—';
+  const r = Math.round(n);
+  if (r === 0) return '0';
+  const s = Math.abs(r).toLocaleString('en-US', {
+    maximumFractionDigits: 0,
+    minimumFractionDigits: 0,
+  });
+  return r > 0 ? `+${s}` : `−${s}`;
 }
 
 function fmtMoney(n: number): string {
@@ -580,7 +597,7 @@ export default function InventoryQuery() {
               {total > 0 ? (
                 <>Showing <strong>{showingFrom.toLocaleString()}–{showingTo.toLocaleString()}</strong> of <strong>{total.toLocaleString()}</strong> SKUs</>
               ) : loading ? 'Loading…' : 'No SKUs match the current filter.'}
-              {' '}· Page on-hand sum: <strong>{fmtNumber(pageTotals.qty, 2)}</strong>
+              {' '}· Page on-hand sum: <strong>{fmtQty(pageTotals.qty)}</strong>
               {' '}· Page value: <strong>{fmtMoney(pageTotals.value)}</strong>
               {' '}· SKUs with stock on this page: <strong>{pageTotals.nonZero}</strong>
             </div>
@@ -639,7 +656,7 @@ export default function InventoryQuery() {
                       <Badge variant="secondary">{r.productType}</Badge>
                     </TableCell>
                     <TableCell className="text-right font-mono text-sm">
-                      {fmtNumber(r.onHand, 3)} {r.unit}
+                      {fmtQty(r.onHand)} {r.unit}
                     </TableCell>
                     <TableCell className="text-right font-mono text-sm">
                       {r.onHand > 0 ? fmtMoney(r.averageCost) : '—'}
@@ -833,7 +850,7 @@ export default function InventoryQuery() {
               <>
                 {/* Totals */}
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                  <KpiBlock label="On hand"  value={fmtNumber(detail.totals.onHand, 3)} />
+                  <KpiBlock label="On hand"  value={fmtQty(detail.totals.onHand)} />
                   <KpiBlock label="Avg cost" value={detail.totals.onHand > 0 ? fmtMoney(detail.totals.averageCost) : '—'} />
                   <KpiBlock label="Value"    value={fmtMoney(detail.totals.totalValue)} />
                   <KpiBlock label="Layers"   value={String(detail.totals.layerCount)} />
@@ -882,8 +899,8 @@ export default function InventoryQuery() {
                             <TableCell>{l.vendorName ?? <span className="text-slate-400">—</span>}</TableCell>
                             <TableCell>{l.packingSlipNo ?? <span className="text-slate-400">—</span>}</TableCell>
                             <TableCell className="text-right font-mono text-sm">{fmtMoney(l.unitCost)}</TableCell>
-                            <TableCell className="text-right font-mono text-sm">{fmtNumber(l.originalQuantity, 3)}</TableCell>
-                            <TableCell className="text-right font-mono text-sm">{fmtNumber(l.qtyRemainingAsOf, 3)}</TableCell>
+                            <TableCell className="text-right font-mono text-sm">{fmtQty(l.originalQuantity)}</TableCell>
+                            <TableCell className="text-right font-mono text-sm">{fmtQty(l.qtyRemainingAsOf)}</TableCell>
                             <TableCell className="text-right font-mono text-sm">{fmtMoney(l.valueAsOf)}</TableCell>
                           </TableRow>
                         ))}
@@ -940,18 +957,18 @@ export default function InventoryQuery() {
                                 </div>
                               </TableCell>
                               <TableCell className={`text-right font-mono text-sm ${d.grossIn > 0 ? 'text-emerald-700' : 'text-slate-400'}`}>
-                                {d.grossIn > 0 ? `+${fmtNumber(d.grossIn, 3)}` : '—'}
+                                {d.grossIn > 0 ? fmtQtySigned(d.grossIn) : '—'}
                               </TableCell>
                               <TableCell className={`text-right font-mono text-sm ${d.grossOut < 0 ? 'text-red-700' : 'text-slate-400'}`}>
-                                {d.grossOut < 0 ? fmtNumber(d.grossOut, 3) : '—'}
+                                {d.grossOut < 0 ? fmtQtySigned(d.grossOut) : '—'}
                               </TableCell>
                               <TableCell className={`text-right font-mono text-sm font-semibold ${signColor(d.netDelta)}`}>
-                                {fmtSigned(d.netDelta, 3)}
+                                {fmtQtySigned(d.netDelta)}
                               </TableCell>
                               <TableCell className="text-right font-mono text-sm">
-                                <div>{fmtNumber(d.closingQty, 3)}</div>
+                                <div>{fmtQty(d.closingQty)}</div>
                                 <div className={`text-xs ${signColor(d.deltaQty)}`}>
-                                  {d.deltaQty !== 0 ? `(${fmtSigned(d.deltaQty, 3)} vs prev)` : ''}
+                                  {Math.abs(Math.round(d.deltaQty)) > 0 ? `(${fmtQtySigned(d.deltaQty)} vs prev)` : ''}
                                 </div>
                               </TableCell>
                               <TableCell className="text-right font-mono text-sm">
@@ -1004,7 +1021,7 @@ export default function InventoryQuery() {
                                 {m.type}
                               </span>
                             </TableCell>
-                            <TableCell className="text-right font-mono text-sm">{fmtNumber(m.quantity, 3)}</TableCell>
+                            <TableCell className="text-right font-mono text-sm">{fmtQty(m.quantity)}</TableCell>
                             <TableCell className="text-right font-mono text-sm">{m.unitCost === null ? '—' : fmtMoney(m.unitCost)}</TableCell>
                             <TableCell className="text-right font-mono text-sm">{fmtMoney(m.totalValue)}</TableCell>
                             <TableCell className="text-xs">{m.reference}</TableCell>
@@ -1098,7 +1115,7 @@ export default function InventoryQuery() {
                           <div>
                             <span className="text-slate-500">Net qty: </span>
                             <span className={`font-mono font-semibold ${signColor(g.netQty)}`}>
-                              {fmtSigned(g.netQty, 3)} {g.unit}
+                              {fmtQtySigned(g.netQty)} {g.unit}
                             </span>
                           </div>
                           <div>
@@ -1131,7 +1148,7 @@ export default function InventoryQuery() {
                                 </span>
                               </TableCell>
                               <TableCell className={`text-right font-mono text-sm ${signColor(m.quantity)}`}>
-                                {fmtSigned(m.quantity, 3)}
+                                {fmtQtySigned(m.quantity)}
                               </TableCell>
                               <TableCell className="text-right font-mono text-sm">
                                 {m.unitCost === null ? '—' : fmtMoney(m.unitCost)}
@@ -1184,16 +1201,6 @@ function KpiBlock({ label, value }: { label: string; value: string }) {
   );
 }
 
-function fmtSigned(n: number, digits = 2): string {
-  if (!Number.isFinite(n)) return '—';
-  if (n === 0) return '0';
-  const s = n.toLocaleString('en-US', {
-    minimumFractionDigits: digits,
-    maximumFractionDigits: digits,
-  });
-  return n > 0 ? `+${s}` : s;
-}
-
 function fmtSignedMoney(n: number): string {
   if (!Number.isFinite(n)) return '—';
   const abs = Math.abs(n).toLocaleString('en-US', {
@@ -1215,7 +1222,7 @@ function MovementChip({ mt }: { mt: TimelineMovementByType }) {
       title={`${mt.count} movement${mt.count === 1 ? '' : 's'}`}
     >
       <span>{mt.type}</span>
-      <span className="font-mono">{fmtSigned(mt.qty, 2)}</span>
+      <span className="font-mono">{fmtQtySigned(mt.qty)}</span>
     </span>
   );
 }
