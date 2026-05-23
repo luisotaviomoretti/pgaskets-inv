@@ -14,6 +14,7 @@ import { useAuth } from '@/components/auth/AuthContext';
 const Receiving = lazy(() => import('./Receiving'));
 const WorkOrder = lazy(() => import('./WorkOrder'));
 const Movements = lazy(() => import('./Movements'));
+const InventoryQuery = lazy(() => import('./InventoryQuery'));
 import MetricCard from '@/features/inventory/components/Dashboard/MetricCard';
 import { 
   getMovements as getBackendMovements, 
@@ -725,6 +726,15 @@ function Activity({ className }: { className?: string }) {
   return (
     <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24">
       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+    </svg>
+  );
+}
+
+// History icon for Inventory Query tab
+function History({ className }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
     </svg>
   );
 }
@@ -2351,7 +2361,7 @@ export default function InventoryWireframe() {
 
       <main className="max-w-6xl mx-auto px-4 py-6">
         <Tabs value={tab} onValueChange={setTab}>
-          <TabsList className="grid grid-cols-2 md:grid-cols-4 w-full rounded-2xl">
+          <TabsList className="grid grid-cols-2 md:grid-cols-5 w-full rounded-2xl">
             <TabsTrigger value="dashboard">Dashboard</TabsTrigger>
             <TabsTrigger value="receiving" className="flex items-center justify-center gap-2">
               <Package className="h-4 w-4" />
@@ -2364,6 +2374,10 @@ export default function InventoryWireframe() {
             <TabsTrigger value="movements" className="flex items-center justify-center gap-2">
               <Activity className="h-4 w-4" />
               Movements
+            </TabsTrigger>
+            <TabsTrigger value="inventory-query" className="flex items-center justify-center gap-2">
+              <History className="h-4 w-4" />
+              Inventory Query
             </TabsTrigger>
           </TabsList>
 
@@ -2920,6 +2934,13 @@ export default function InventoryWireframe() {
                   console.log('❌ Frontend state NOT updated due to backend error');
                 }
               }}/>
+          </div>
+
+          {/* NAV-12: Inventory Query tab - always mounted, visibility controlled */}
+          <div className={`mt-6 ${tab === 'inventory-query' ? '' : 'hidden'}`}>
+            <Suspense fallback={<div>Loading...</div>}>
+              <InventoryQuery />
+            </Suspense>
           </div>
         </Tabs>
       </main>

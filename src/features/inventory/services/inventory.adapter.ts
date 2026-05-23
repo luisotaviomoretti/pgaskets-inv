@@ -18,6 +18,7 @@ import * as WorkOrderService from './supabase/workorder.service';
 import * as AuditService from './supabase/audit.service';
 import * as VendorService from './supabase/vendor.service';
 import * as CategoryService from './supabase/category.service';
+import * as InventoryQueryService from './supabase/inventoryQuery.service';
 
 /**
  * SKU Operations
@@ -368,6 +369,32 @@ export const workOrderOperations = {
   async getWorkOrderById(id: string) {
     return await WorkOrderService.getWorkOrderById(id);
   }
+};
+
+/**
+ * Inventory Query Operations (read-only as-of-date reconstruction)
+ * Wraps the snapshot + drill-down RPCs introduced in migrations 049/050/051.
+ */
+export const inventoryQueryOperations = {
+  async getSnapshotAsOf(filters: InventoryQueryService.InventorySnapshotFilters) {
+    return await InventoryQueryService.getInventorySnapshotAsOf(filters);
+  },
+
+  async getSkuDetailAsOf(skuId: string, targetDate: Date, tz?: string) {
+    return await InventoryQueryService.getSkuDetailAsOf(skuId, targetDate, tz);
+  },
+
+  async getSkuDailyTimelineAsOf(skuId: string, targetDate: Date, daysBack: number | null = null, tz?: string) {
+    return await InventoryQueryService.getSkuDailyTimelineAsOf(skuId, targetDate, daysBack, tz);
+  },
+
+  async getInventoryTimelineAsOf(targetDate: Date, daysBack: number | null = 30, tz?: string) {
+    return await InventoryQueryService.getInventoryTimelineAsOf(targetDate, daysBack, tz);
+  },
+
+  async getMovementsOnDate(targetDate: Date, tz?: string) {
+    return await InventoryQueryService.getMovementsOnDate(targetDate, tz);
+  },
 };
 
 /**

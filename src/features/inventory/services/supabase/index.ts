@@ -18,6 +18,9 @@ export * from './movement.service';
 // Work Order Services
 export * from './workorder.service';
 
+// Inventory Query Services (read-only as-of-date reconstruction)
+export * from './inventoryQuery.service';
+
 // Re-export types for convenience
 export type {
   RawMaterialLine,
