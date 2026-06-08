@@ -42,6 +42,25 @@ const PAGE_SIZE_OPTIONS = [25, 50, 100, 250] as const;
 const EXPORT_ALL_WARN_THRESHOLD = 5000;
 
 /**
+ * Opening-balance value date.
+ *
+ * The initial stock was loaded into the system on 2026-03-12, but those
+ * physical counts represent on-hand AS OF 2026-02-28 (per the business
+ * owner). The opening balance is stored as 120 FIFO layers (INIT-*) with
+ * receiving_date = 2026-02-28 and NO movement rows — it was seeded directly,
+ * not via a RECEIVE.
+ *
+ * Because the Daily Inventory Timeline only emits rows for days that have
+ * movement activity, the opening balance has no row of its own (there are no
+ * movements on 2026-02-28). Its value is already folded into the closing
+ * value of the first day that *does* have activity (2026-03-02). When the
+ * user queries exactly this date, we synthesize a read-only "Opening Balance"
+ * row so the timeline has a visible starting point. The figure is derived
+ * from the snapshot RPC (single source of truth), never hard-coded.
+ */
+const OPENING_BALANCE_DATE = '2026-02-28';
+
+/**
  * Today (calendar) in America/Toronto as YYYY-MM-DD. We compute it via
  * Intl.DateTimeFormat to avoid the user's local-TZ skew bleeding into the
  * default date.
@@ -181,6 +200,13 @@ export default function InventoryQuery() {
 
   // Excel export state for aggregate timeline
   const [aggExporting, setAggExporting] = useState<boolean>(false);
+
+  // Synthetic "Opening Balance" row for the timeline. Only populated when the
+  // user queries exactly OPENING_BALANCE_DATE (the opening balance has no
+  // movements, so the timeline would otherwise render nothing). Derived from
+  // the snapshot RPC, not hard-coded — see OPENING_BALANCE_DATE doc above.
+  const [openingBalance, setOpeningBalance] =
+    useState<{ qty: number; value: number; layers: number } | null>(null);
 
   // Debounce SKU filter so each keystroke doesn't hit the network
   const skuFilterDebounced = useDebounced(skuFilter, 300);
@@ -424,6 +450,48 @@ export default function InventoryQuery() {
       .finally(() => { if (!cancelled) setAggTimelineLoading(false); });
     return () => { cancelled = true; };
   }, [targetDate, aggDaysBack]);
+
+  // Opening-balance row: only when the user queries exactly the opening-balance
+  // date. We sum the snapshot as-of that date (full inventory, not just one
+  // page) to get the closing qty/value/layers the synthetic row should show.
+  // For any other date this clears to null so no row is injected.
+  useEffect(() => {
+    if (dateYmd !== OPENING_BALANCE_DATE) {
+      setOpeningBalance(null);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const obDate = parseYmd(OPENING_BALANCE_DATE);
+        let qty = 0, value = 0, layers = 0;
+        const pageStep = 1000;
+        for (let off = 0; ; off += pageStep) {
+          const { rows: chunk, total } = await inventoryQueryOperations.getSnapshotAsOf({
+            targetDate: obDate,
+            tz: TZ,
+            skuFilter: null,
+            limit: pageStep,
+            offset: off,
+            sort: 'sku_code_asc',
+          });
+          for (const r of chunk) {
+            qty += r.onHand;
+            value += r.totalValue;
+            layers += r.activeLayers;
+          }
+          if (off + pageStep >= total || chunk.length === 0) break;
+        }
+        if (!cancelled) setOpeningBalance({ qty, value, layers });
+      } catch (err: any) {
+        if (cancelled) return;
+        console.error('[InventoryQuery] opening-balance error', err);
+        // Non-fatal: just don't show the synthetic row.
+        setOpeningBalance(null);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [dateYmd]);
 
   const totalPages = total > 0 ? Math.ceil(total / pageSize) : 0;
   const showingFrom = total === 0 ? 0 : page * pageSize + 1;
@@ -784,11 +852,33 @@ export default function InventoryQuery() {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {aggTimeline.days.length === 0 && (
+                    {aggTimeline.days.length === 0 && !openingBalance && (
                       <TableRow>
                         <TableCell colSpan={7} className="text-center text-slate-500 py-6">
                           No movement activity in the selected window.
                         </TableCell>
+                      </TableRow>
+                    )}
+                    {openingBalance && (
+                      <TableRow className="bg-slate-50/60">
+                        <TableCell className="text-sm font-medium">
+                          <span className="flex items-center gap-2">
+                            <span>{OPENING_BALANCE_DATE}</span>
+                            <span className="inline-flex items-center rounded-md border border-slate-300 bg-white px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-600">
+                              Opening Balance
+                            </span>
+                          </span>
+                        </TableCell>
+                        <TableCell>
+                          <span className="text-xs text-slate-500 italic">
+                            Initial stock load — no movements
+                          </span>
+                        </TableCell>
+                        <TableCell className="text-right font-mono text-sm text-slate-400">—</TableCell>
+                        <TableCell className="text-right font-mono text-sm text-slate-400">—</TableCell>
+                        <TableCell className="text-right font-mono text-sm">{openingBalance.layers}</TableCell>
+                        <TableCell className="text-right font-mono text-sm">{fmtMoney(openingBalance.value)}</TableCell>
+                        <TableCell className="text-right font-mono text-sm text-slate-400">—</TableCell>
                       </TableRow>
                     )}
                     {aggTimeline.days.map((d) => (
