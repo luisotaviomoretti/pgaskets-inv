@@ -201,12 +201,18 @@ export default function InventoryQuery() {
   // Excel export state for aggregate timeline
   const [aggExporting, setAggExporting] = useState<boolean>(false);
 
-  // Synthetic "Opening Balance" row for the timeline. Only populated when the
-  // user queries exactly OPENING_BALANCE_DATE (the opening balance has no
-  // movements, so the timeline would otherwise render nothing). Derived from
-  // the snapshot RPC, not hard-coded — see OPENING_BALANCE_DATE doc above.
+  // Synthetic "Opening Balance" row for the timeline. Populated whenever the
+  // queried date is >= OPENING_BALANCE_DATE (the opening balance exists from
+  // that day on). The opening balance has no movements, so it gets a
+  // synthetic, read-only row anchored at the bottom of the timeline. Totals
+  // AND the per-item breakdown are derived from the snapshot RPC as-of
+  // OPENING_BALANCE_DATE (single source of truth) — never hard-coded, and
+  // always as-of the opening date (not the queried date), since it represents
+  // the starting stock. See OPENING_BALANCE_DATE doc above.
   const [openingBalance, setOpeningBalance] =
-    useState<{ qty: number; value: number; layers: number } | null>(null);
+    useState<{ qty: number; value: number; layers: number; items: InventorySnapshotRow[] } | null>(null);
+  // Whether the "Opening Balance items" modal is open.
+  const [openingBalanceModal, setOpeningBalanceModal] = useState<boolean>(false);
 
   // Debounce SKU filter so each keystroke doesn't hit the network
   const skuFilterDebounced = useDebounced(skuFilter, 300);
@@ -434,6 +440,35 @@ export default function InventoryQuery() {
     }
   }, [dayDrill]);
 
+  // Excel export — Opening Balance items (the initial stock load).
+  const exportOpeningBalance = useCallback(async () => {
+    if (!openingBalance || openingBalance.items.length === 0) return;
+    try {
+      const XLSX = await import('xlsx');
+      const data = openingBalance.items.map((r) => ({
+        'SKU': r.skuId,
+        'Description': r.description,
+        'Type': r.productType,
+        'Category': r.productCategory,
+        'Unit': r.unit,
+        'Quantity': r.onHand,
+        'Unit cost': r.averageCost,
+        'Value': r.totalValue,
+      }));
+      const wb = XLSX.utils.book_new();
+      const ws = XLSX.utils.json_to_sheet(data);
+      ws['!cols'] = [
+        { wch: 30 }, { wch: 50 }, { wch: 10 }, { wch: 18 },
+        { wch: 8 }, { wch: 14 }, { wch: 14 }, { wch: 14 },
+      ];
+      XLSX.utils.book_append_sheet(wb, ws, `Opening Balance`);
+      XLSX.writeFile(wb, `opening-balance-${OPENING_BALANCE_DATE}.xlsx`);
+      toast.success(`Exported ${data.length} item(s)`);
+    } catch (err: any) {
+      toast.error('Export failed: ' + (err?.message ?? 'unknown error'));
+    }
+  }, [openingBalance]);
+
   // Aggregate timeline: refetch when target date or window changes.
   useEffect(() => {
     let cancelled = false;
@@ -451,12 +486,15 @@ export default function InventoryQuery() {
     return () => { cancelled = true; };
   }, [targetDate, aggDaysBack]);
 
-  // Opening-balance row: only when the user queries exactly the opening-balance
-  // date. We sum the snapshot as-of that date (full inventory, not just one
-  // page) to get the closing qty/value/layers the synthetic row should show.
-  // For any other date this clears to null so no row is injected.
+  // Opening-balance row: shown whenever the queried date is on or after the
+  // opening-balance date (the opening balance exists from that day on; before
+  // it, there was no stock). We always reconstruct it AS-OF the opening date
+  // (not the queried date) because it represents the starting stock — a fixed
+  // anchor. We sum the snapshot as-of that date (full inventory, paged) for
+  // the row totals, and keep the rows for the items modal. For earlier dates
+  // this clears to null so no row is injected.
   useEffect(() => {
-    if (dateYmd !== OPENING_BALANCE_DATE) {
+    if (dateYmd < OPENING_BALANCE_DATE) {
       setOpeningBalance(null);
       return;
     }
@@ -465,6 +503,7 @@ export default function InventoryQuery() {
       try {
         const obDate = parseYmd(OPENING_BALANCE_DATE);
         let qty = 0, value = 0, layers = 0;
+        const items: InventorySnapshotRow[] = [];
         const pageStep = 1000;
         for (let off = 0; ; off += pageStep) {
           const { rows: chunk, total } = await inventoryQueryOperations.getSnapshotAsOf({
@@ -476,13 +515,17 @@ export default function InventoryQuery() {
             sort: 'sku_code_asc',
           });
           for (const r of chunk) {
+            if (r.onHand <= 0) continue; // only items that actually hold opening stock
             qty += r.onHand;
             value += r.totalValue;
             layers += r.activeLayers;
+            items.push(r);
           }
           if (off + pageStep >= total || chunk.length === 0) break;
         }
-        if (!cancelled) setOpeningBalance({ qty, value, layers });
+        // Largest value first — most informative ordering for the modal.
+        items.sort((a, b) => b.totalValue - a.totalValue);
+        if (!cancelled) setOpeningBalance({ qty, value, layers, items });
       } catch (err: any) {
         if (cancelled) return;
         console.error('[InventoryQuery] opening-balance error', err);
@@ -859,28 +902,6 @@ export default function InventoryQuery() {
                         </TableCell>
                       </TableRow>
                     )}
-                    {openingBalance && (
-                      <TableRow className="bg-slate-50/60">
-                        <TableCell className="text-sm font-medium">
-                          <span className="flex items-center gap-2">
-                            <span>{OPENING_BALANCE_DATE}</span>
-                            <span className="inline-flex items-center rounded-md border border-slate-300 bg-white px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-600">
-                              Opening Balance
-                            </span>
-                          </span>
-                        </TableCell>
-                        <TableCell>
-                          <span className="text-xs text-slate-500 italic">
-                            Initial stock load — no movements
-                          </span>
-                        </TableCell>
-                        <TableCell className="text-right font-mono text-sm text-slate-400">—</TableCell>
-                        <TableCell className="text-right font-mono text-sm text-slate-400">—</TableCell>
-                        <TableCell className="text-right font-mono text-sm">{openingBalance.layers}</TableCell>
-                        <TableCell className="text-right font-mono text-sm">{fmtMoney(openingBalance.value)}</TableCell>
-                        <TableCell className="text-right font-mono text-sm text-slate-400">—</TableCell>
-                      </TableRow>
-                    )}
                     {aggTimeline.days.map((d) => (
                       <TableRow
                         key={d.date}
@@ -912,6 +933,36 @@ export default function InventoryQuery() {
                         </TableCell>
                       </TableRow>
                     ))}
+                    {/* Opening-balance anchor — always the last (oldest) row. */}
+                    {openingBalance && (
+                      <TableRow
+                        className="bg-slate-50/60 cursor-pointer hover:bg-slate-100"
+                        onClick={() => setOpeningBalanceModal(true)}
+                        title="Click to see the items in the initial stock load"
+                      >
+                        <TableCell className="text-sm font-medium">
+                          <span className="flex items-center gap-2">
+                            <span>{OPENING_BALANCE_DATE}</span>
+                            <span className="inline-flex items-center rounded-md border border-slate-300 bg-white px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-600">
+                              Opening Balance
+                            </span>
+                            <svg className="w-3 h-3 text-slate-400" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                            </svg>
+                          </span>
+                        </TableCell>
+                        <TableCell>
+                          <span className="text-xs text-slate-500 italic">
+                            Initial stock load — {openingBalance.items.length} item{openingBalance.items.length === 1 ? '' : 's'}, no movements
+                          </span>
+                        </TableCell>
+                        <TableCell className="text-right font-mono text-sm text-slate-400">—</TableCell>
+                        <TableCell className="text-right font-mono text-sm text-slate-400">—</TableCell>
+                        <TableCell className="text-right font-mono text-sm">{openingBalance.layers}</TableCell>
+                        <TableCell className="text-right font-mono text-sm">{fmtMoney(openingBalance.value)}</TableCell>
+                        <TableCell className="text-right font-mono text-sm text-slate-400">—</TableCell>
+                      </TableRow>
+                    )}
                   </TableBody>
                 </Table>
               </div>
@@ -1270,6 +1321,88 @@ export default function InventoryQuery() {
 
                 <div className="flex justify-end pt-2">
                   <Button size="sm" variant="outline" onClick={closeDayDrill} className="rounded-xl">
+                    Close
+                  </Button>
+                </div>
+              </>
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Opening Balance items — the SKUs that make up the initial stock load */}
+      <Dialog open={openingBalanceModal} onOpenChange={(o) => { if (!o) setOpeningBalanceModal(false); }}>
+        <DialogContent className="max-w-5xl w-[95vw]">
+          <DialogHeader>
+            <DialogTitle className="text-base">
+              <span>Opening Balance</span>
+              <span className="ml-2 text-xs font-normal text-slate-500">
+                initial stock load as of {OPENING_BALANCE_DATE} ({TZ})
+              </span>
+            </DialogTitle>
+          </DialogHeader>
+          <div className="px-6 pb-6 space-y-4">
+            {openingBalance && (
+              <>
+                <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+                  <KpiBlock label="Items"        value={String(openingBalance.items.length)} />
+                  <KpiBlock label="Total on hand" value={fmtQty(openingBalance.qty)} />
+                  <KpiBlock label="Total value"   value={fmtMoney(openingBalance.value)} />
+                </div>
+
+                <div className="flex items-center justify-between">
+                  <div className="text-sm text-slate-600">
+                    The initial stock has no movements — it was loaded directly. Sorted by value (largest first).
+                  </div>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={exportOpeningBalance}
+                    disabled={openingBalance.items.length === 0}
+                    className="rounded-xl bg-blue-50 text-blue-700 border-blue-200 hover:bg-blue-100"
+                  >
+                    Export Excel
+                  </Button>
+                </div>
+
+                <div className="rounded-xl border overflow-hidden max-h-[60vh] overflow-y-auto">
+                  <Table className="w-full">
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead className="w-[26%]">SKU</TableHead>
+                        <TableHead className="w-[34%]">Description</TableHead>
+                        <TableHead className="w-[10%]">Type</TableHead>
+                        <TableHead className="text-right w-[10%]">Quantity</TableHead>
+                        <TableHead className="text-right w-[10%]">Unit cost</TableHead>
+                        <TableHead className="text-right w-[10%]">Value</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {openingBalance.items.length === 0 && (
+                        <TableRow>
+                          <TableCell colSpan={6} className="text-center text-slate-500 py-6">
+                            No items in the opening balance.
+                          </TableCell>
+                        </TableRow>
+                      )}
+                      {openingBalance.items.map((r) => (
+                        <TableRow key={r.skuId}>
+                          <TableCell className="font-mono text-xs">{r.skuId}</TableCell>
+                          <TableCell className="text-sm">{r.description}</TableCell>
+                          <TableCell>
+                            <Badge variant="secondary">{r.productType}</Badge>
+                          </TableCell>
+                          <TableCell className="text-right font-mono text-sm">{fmtQty(r.onHand)} {r.unit}</TableCell>
+                          <TableCell className="text-right font-mono text-sm">{fmtMoney(r.averageCost)}</TableCell>
+                          <TableCell className="text-right font-mono text-sm">{fmtMoney(r.totalValue)}</TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+
+                <div className="flex justify-end pt-2">
+                  <Button size="sm" variant="outline" onClick={() => setOpeningBalanceModal(false)} className="rounded-xl">
                     Close
                   </Button>
                 </div>
