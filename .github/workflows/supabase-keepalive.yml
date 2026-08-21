@@ -1,0 +1,48 @@
+name: Supabase Keep-Alive
+
+# Free-tier Supabase projects are paused after ~7 days of low database
+# activity. A few real user queries per day is enough to avoid it, so this
+# runs a cheap read three times a week.
+#
+# Note: GitHub disables scheduled workflows in repos with no commits for 60
+# days. If this repo goes quiet, re-enable the schedule from the Actions tab.
+on:
+  schedule:
+    # Mon / Wed / Fri at 12:00 UTC (~09:00 BRT)
+    - cron: '0 12 * * 1,3,5'
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Ping Supabase REST API
+        env:
+          SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${SUPABASE_URL}" ] || [ -z "${SUPABASE_ANON_KEY}" ]; then
+            echo "::error::VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY secrets are not set."
+            exit 1
+          fi
+
+          # Read-only SELECT against a view granted to anon. Costs one real
+          # database query and writes nothing.
+          status=$(curl -sS -o /tmp/body.txt -w '%{http_code}' \
+            --max-time 60 --retry 3 --retry-delay 10 --retry-connrefused \
+            "${SUPABASE_URL}/rest/v1/inventory_summary?select=id&limit=1" \
+            -H "apikey: ${SUPABASE_ANON_KEY}" \
+            -H "Authorization: Bearer ${SUPABASE_ANON_KEY}")
+
+          echo "HTTP ${status}"
+
+          if [ "${status}" != "200" ]; then
+            echo "::error::Keep-alive ping failed with HTTP ${status}"
+            cat /tmp/body.txt
+            exit 1
+          fi
+
+          echo "Keep-alive ping OK."
